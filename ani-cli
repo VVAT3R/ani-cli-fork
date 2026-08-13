@@ -207,7 +207,7 @@ search_anidb() {
     _query="$(printf '%s' "$1" | sed 's/ /+/g')"
     _page="$(anidb_curl "https://anidb.app/search/suggestions?q=${_query}" -A "$agent" --max-time 10 | tr '\n' ' ' | sed 's/<a href/\n<a href/g')"
     printf "%s" "$_page" | grep -qi "Just a moment" && die "Blocked by cloudflare"
-    printf '%s' "$_page" | sed -nE 's|.*anime/([a-z0-9-]+-[0-9]+)".*alt="([^"]+)".*|\1\t\2|p' | sed -e "s|&#039;|'|g"
+    printf '%s' "$_page" | sed -nE 's|.*anime/([a-z0-9-]+-[0-9]+)".*alt="([^"]+)".*|\1\t\2|p' | sed -e "s|&amp;#039;|'|g" -e "s|&#039;|'|g" -e 's|&amp;quot;|"|g' -e 's|&quot;|"|g'
 }
 
 anidb_desc() {
@@ -440,8 +440,12 @@ play_episode() {
     case "$player_function" in
         mpv*|flatpak_mpv)
             if [ "$menu_program" != "fzf" ]; then
-                wait $! 2>/dev/null
-                _final_pos=$(get_mpv_position)
+                _final_pos=0
+                while kill -0 "$!" 2>/dev/null; do
+                    _pos=$(get_mpv_position)
+                    [ -n "$_pos" ] && [ "$_pos" != "0" ] && _final_pos=$_pos
+                    sleep 2
+                done
                 update_history "$_final_pos"
             fi
             ;;
@@ -606,6 +610,7 @@ while [ $# -gt 0 ]; do
         --skip) skip_intro=1 ;;
         -N | --nextep-countdown) search=nextep ;;
         -U | --update)
+            dep_ch "patch"
             branch="${2:-$branch}"
             update_script
             ;;
@@ -633,7 +638,7 @@ case "$player_function" in
     *) dep_ch "$player_function" ;;
 esac
 
-trap 'cleanup; exit 1' INT HUP
+trap 'cleanup; exit 1' INT HUP TERM
 
 # searching
 case "$search" in
@@ -649,6 +654,7 @@ case "$search" in
         ep_list=$(episodes_list_anidb "$id")
         ep_no=$(printf "%s" "$anime_list" | grep "$id" | cut -f2 | sed -nE 's/.*- episode (.+)$/\1/p')
         anime_title="$(printf "%s" "$title" | cut -d'(' -f1 | tr -d '[:punct:]')"
+        anidb_desc "$id" || true
         printf "%s" "$anime_list" | grep "$id" | cut -f2 | grep -q "(up to date)" && time_until_next_ep "$anime_title"
         ;;
     *)
