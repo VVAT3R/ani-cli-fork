@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version_number="5.0.4-anikoto-fifo"
+version_number="5.0.5-anikoto-file"
 
 # UI
 
@@ -328,6 +328,7 @@ anikoto_feed_pid=""
 anikoto_feed_dir=""
 anikoto_feed_m3u8=""
 anikoto_feed_variant=""
+anikoto_feed_fifo=0
 # finds where the real MPEG-TS stream starts inside an obfuscated segment:
 # 4 sync bytes (0x47 = 71) spaced 188 bytes apart, prints the 0-based offset
 detect_ts_offset() {
@@ -341,8 +342,11 @@ detect_ts_offset() {
 }
 
 # background feeder: downloads each obfuscated segment, strips the junk prefix
-# and writes clean MPEG-TS into a FIFO that a local m3u8 points at, so
-# mpv/ffmpeg can play the stream (pure POSIX shell, no python3 needed)
+# and writes clean MPEG-TS so the player can read it (pure POSIX shell, no
+# python3). segments are named pipes during download (flow control, so the
+# downloader can't outrun the network) and regular files during playback
+# (written via .part + atomic mv so a partial segment is never visible, which
+# lets mpv re-open segments for backward seeking)
 anikoto_feed_stream() {
     _dir="$1"
     _off="$2"
@@ -354,19 +358,29 @@ anikoto_feed_stream() {
     fi
     while IFS= read -r _url; do
         [ -z "$_url" ] && continue
-        curl -sL -m 60 -A "$agent" -e "${anikoto_referer}/" "$_url" \
-            | tail -c +$((_off + 1)) > "$_dir/seg${_i}.ts"
+        if [ -p "$_dir/seg${_i}.ts" ]; then
+            curl -sL -m 60 -A "$agent" -e "${anikoto_referer}/" "$_url" \
+                | tail -c +$((_off + 1)) > "$_dir/seg${_i}.ts"
+        else
+            curl -sL -m 60 -A "$agent" -e "${anikoto_referer}/" "$_url" \
+                | tail -c +$((_off + 1)) > "$_dir/seg${_i}.ts.part"
+            mv "$_dir/seg${_i}.ts.part" "$_dir/seg${_i}.ts"
+        fi
         _i=$((_i + 1))
     done < "$_dir/segments.txt"
 }
 
-# builds a local m3u8 + FIFO farm for an obfuscated variant stream and starts
-# the feeder; the junk prefix length is auto-detected like the old proxy did
+# builds a local m3u8 + segment cache for an obfuscated variant stream and
+# starts the feeder; the junk prefix length is auto-detected like the old
+# proxy did. downloads use named pipes (flow control), playback uses regular
+# files (seekable), so mpv can rewind during an episode
 start_anikoto_fifo() {
     _variant_url="$1"
     _pl="$(anikoto_curl -e "${anikoto_referer}/" "$_variant_url")"
     printf '%s' "$_pl" | grep -q "EXTM3U" || { warn "Failed to fetch HLS playlist for stream"; return 1; }
     anikoto_feed_dir="$(mktemp -d "${TMPDIR:-/tmp}/anikoto-fifo-XXXXXX")" || return 1
+    anikoto_feed_fifo=0
+    [ "$player_function" = "download" ] && anikoto_feed_fifo=1
     : > "$anikoto_feed_dir/segments.txt"
     _i=0
     printf '%s\n' "$_pl" | while IFS= read -r _line; do
@@ -375,7 +389,7 @@ start_anikoto_fifo() {
             \#*) printf '%s\n' "$_line" ;;
             *)
                 printf '%s\n' "$anikoto_feed_dir/seg${_i}.ts"
-                mkfifo "$anikoto_feed_dir/seg${_i}.ts"
+                [ "$anikoto_feed_fifo" = 1 ] && mkfifo "$anikoto_feed_dir/seg${_i}.ts"
                 printf '%s\n' "$_s" >> "$anikoto_feed_dir/segments.txt"
                 _i=$((_i + 1))
                 ;;
@@ -412,6 +426,19 @@ start_anikoto_fifo() {
         anikoto_feed_dir=""
         return 1
     fi
+
+    # playback: buffer the first few segments so mpv starts without stalling
+    if [ "$anikoto_feed_fifo" != 1 ]; then
+        _n=0
+        _waits=0
+        while [ "$_waits" -lt 30 ]; do
+            _n=0
+            while [ -f "$anikoto_feed_dir/seg$_n.ts" ]; do _n=$((_n + 1)); done
+            [ "$_n" -ge 3 ] && break
+            sleep 1
+            _waits=$((_waits + 1))
+        done
+    fi
 }
 
 anikoto_feed_cleanup() {
@@ -424,6 +451,7 @@ anikoto_feed_cleanup() {
     anikoto_feed_dir=""
     anikoto_feed_m3u8=""
     anikoto_feed_variant=""
+    anikoto_feed_fifo=0
 }
 
 # gets m3u8 stream URL from the active provider and selects quality
