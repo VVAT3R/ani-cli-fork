@@ -29,7 +29,7 @@ A fork of [pystardust/ani-cli](https://github.com/pystardust/ani-cli) built arou
 ### Quick start
 
 ```sh
-curl -sL https://raw.githubusercontent.com/VVAT3R/ani-cli/master/install.sh | sudo sh
+curl -sL https://raw.githubusercontent.com/VVAT3R/ani-cli-anikoto/master/install.sh | sudo sh
 ```
 
 ### Learn more
