@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version_number="5.0.2-anidb"
+version_number="5.0.3-anikoto"
 
 # UI
 
@@ -71,6 +71,8 @@ help_info() {
         Select nth entry
       -q, --quality
         Specify the video quality
+      -p, --provider
+        Choose the provider: anikoto (default)
       -v, --vlc
         Use VLC to play the video
       -V, --version
@@ -162,6 +164,13 @@ where_mpv() {
 cleanup() {
     tput sgr0               # clears colors
     rm -f "${histfile}.new" # remove temp logfile
+    if [ -n "$anikoto_proxy_pid" ]; then
+        kill "$anikoto_proxy_pid" 2>/dev/null
+        wait "$anikoto_proxy_pid" 2>/dev/null
+        anikoto_proxy_pid=""
+    fi
+    [ -n "$anikoto_proxy_pidfile" ] && rm -f "$anikoto_proxy_pidfile"
+    rm -f "${TMPDIR:-/tmp}/anikoto-proxy-"*.py "${TMPDIR:-/tmp}/anikoto-proxy-"*.pid
 }
 
 # SCRAPING
@@ -174,28 +183,32 @@ select_quality() {
     esac
     [ -z "$result" ] && warn "Specified quality not found, defaulting to best" && result=$(printf "%s" "$links" | head -n1)
 
-    refr_flag="--referrer=https://anidb.app"
+    refr_flag="--referrer=${anikoto_referer:-$provider_base}/"
     episode=$(printf "%s" "$result" | cut -d'>' -f2)
+
+    # obfuscated streams (megaplay) need the local decode proxy to play
+    if [ "$anikoto_direct" != 1 ] && [ -n "$episode" ]; then
+        if [ -n "$anikoto_proxy_pid" ] && [ "$anikoto_proxy_variant" != "$episode" ]; then
+            kill "$anikoto_proxy_pid" 2>/dev/null
+            anikoto_proxy_pid=""
+            anikoto_proxy_url=""
+        fi
+        [ -z "$anikoto_proxy_pid" ] && start_anikoto_proxy "$episode" 252
+        anikoto_proxy_variant="$episode"
+        episode="$anikoto_proxy_url"
+    fi
 }
 
-# anidb.app: search, get episodes, extract m3u8
-anidb_curl() {
+# anikototv.to: search, get episodes, extract m3u8
+provider_base="https://anikototv.to"
+
+anikoto_curl() {
     _retries=3
     _result=""
     while [ $_retries -gt 0 ]; do
-        _result="$($curl_exe -sL --http1.1 \
-            --ciphers "$ciphers" --tls13-ciphers "$tls13_ciphers" \
-            -A "$agent" \
-            -H 'Accept-Language: en-US,en;q=0.9' \
-            -H 'Accept-Encoding: gzip, deflate' \
-            --compressed \
-            -H 'Sec-CH-UA: "Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"' \
-            -H 'Sec-CH-UA-Mobile: ?0' \
-            -H 'Sec-CH-UA-Platform: "Windows"' \
-            -H 'DNT: 1' \
-            -H 'Upgrade-Insecure-Requests: 1' \
-            -H 'Referer: https://anidb.app' \
-            --max-time 10 "$@" 2>/dev/null | tr -d '\r')"
+        _result="$($curl_exe -sL -A "$agent" \
+            -H 'X-Requested-With: XMLHttpRequest' \
+            --max-time 15 "$@" 2>/dev/null | tr -d '\r')"
         [ -n "$_result" ] && printf '%s' "$_result" && return 0
         _retries=$((_retries - 1))
         [ $_retries -gt 0 ] && sleep 1
@@ -203,72 +216,191 @@ anidb_curl() {
     return 1
 }
 
-search_anidb() {
+search_anikoto() {
     _query="$(printf '%s' "$1" | sed 's/ /+/g')"
-    _page="$(anidb_curl "https://anidb.app/search/suggestions?q=${_query}" -A "$agent" --max-time 10 | tr '\n' ' ' | sed 's/<a href/\n<a href/g')"
-    printf "%s" "$_page" | grep -qi "Just a moment" && die "Blocked by cloudflare"
-    printf '%s' "$_page" | sed -nE 's|.*anime/([a-z0-9-]+-[0-9]+)".*alt="([^"]+)".*|\1\t\2|p' | sed -e "s|&amp;#039;|'|g" -e "s|&#039;|'|g" -e 's|&amp;quot;|"|g' -e 's|&quot;|"|g'
+    _page="$(anikoto_curl "${provider_base}/ajax/anime/search?keyword=${_query}")"
+    printf '%s' "$_page" | grep -qi "Just a moment" && die "Blocked by cloudflare"
+    printf '%s' "$_page" | sed -e 's|\\/|/|g' -e 's|\\"|"|g' -e 's|<a class="item"|\n<a class="item"|g' \
+        | sed -nE 's|.*/watch/([a-z0-9-]+)".*name d-title"[^>]*>([^<]+).*|\1\t\2|p' \
+        | sed -e "s|&amp;#039;|'|g" -e "s|&#039;|'|g" -e 's|&amp;quot;|"|g' -e 's|&quot;|"|g'
 }
 
-anidb_desc() {
-    _anime_link="$1"
-    _page="$(anidb_curl "https://anidb.app/anime/${_anime_link}" -A "$agent" --max-time 10 | tr '\n' ' ' | sed 's|<a href|\n<a href|g')"
-    mal_id="$(printf "%s" "$_page" | sed -nE 's|.*https://myanimelist.net/anime/([0-9]+)/.*|\1|p')"
-    seasons="$(printf "%s" "$_page" | sed -n '/>Seasons</,/>Details</p' | sed -nE 's|.*anime/([^"]+-[0-9]+)"[^>]*title="([^"]+)".*|\1\t\2|p' | sed -e "s|&#039;|'|g")"
-    [ -n "$seasons" ] && seasons_option="\nseasons"
+# cache the numeric anime id and the episodes JSON per anime to avoid refetching
+anikoto_numeric_id=""
+anikoto_numeric_slug=""
+anime_id_anikoto() {
+    _slug="$1"
+    if [ "$anikoto_numeric_slug" != "$_slug" ]; then
+        _page="$(anikoto_curl "${provider_base}/watch/${_slug}")"
+        anikoto_numeric_id="$(printf '%s' "$_page" | tr '\n' ' ' | sed -nE 's|.*id="watch-main"[^>]*data-id="([0-9]+)".*|\1|p')"
+        [ -z "$anikoto_numeric_id" ] && anikoto_numeric_id="$(printf '%s' "$_page" | grep -oE 'mangaId = [0-9]+' | head -1 | grep -oE '[0-9]+')"
+        anikoto_numeric_slug="$_slug"
+    fi
+    [ -n "$anikoto_numeric_id" ] || return 1
 }
 
-# cache the episodes JSON per anime to avoid refetching it for every episode
-ep_json=""
-ep_json_id=""
-
-anime_episodes_json() {
-    _anime_id="$1"
-    if [ "$ep_json_id" != "$_anime_id" ]; then
-        ep_json="$(anidb_curl "https://anidb.app/api/frontend/anime/${_anime_id}/episodes" -A "$agent" -H "Accept: application/json" --max-time 10)"
-        ep_json_id="$_anime_id"
+anikoto_ep_json=""
+anikoto_ep_json_id=""
+anime_episodes_json_anikoto() {
+    _id="$1"
+    if [ "$anikoto_ep_json_id" != "$_id" ]; then
+        anikoto_ep_json="$(anikoto_curl "${provider_base}/ajax/episode/list/${_id}")"
+        anikoto_ep_json_id="$_id"
     fi
 }
 
-episodes_list_anidb() {
-    _anime_id="${1##*-}"
-    anime_episodes_json "$_anime_id"
-    printf '%s' "$ep_json" | sed 's/},{/}\n{/g' | sed -nE 's|.*"number":([0-9]+).*|\1|p' | sort -n -u
+episodes_list_anikoto() {
+    _slug="$1"
+    anime_id_anikoto "$_slug" || return 1
+    anime_episodes_json_anikoto "$anikoto_numeric_id"
+    printf '%s' "$anikoto_ep_json" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
+        | grep -oE 'data-num="[0-9]+"' | grep -oE '[0-9]+' | sort -n -u
 }
 
-get_anidb_m3u8() {
-    _anime_id="${1##*-}"
+anikoto_desc() {
+    _slug="$1"
+    anime_id_anikoto "$_slug" || return 1
+    anime_episodes_json_anikoto "$anikoto_numeric_id"
+    _first="$(printf '%s' "$anikoto_ep_json" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
+        | sed 's|<a |\n<a |g' | grep 'data-num="1"' | head -1)"
+    mal_id="$(printf '%s' "$_first" | grep -oE 'data-mal="[0-9]+"' | head -1 | cut -d'"' -f2)"
+}
+
+anikoto_m3u8=""
+anikoto_referer=""
+anikoto_direct=0
+get_anikoto_m3u8() {
+    _slug="$1"
     _ep_no="$2"
-    _ep_json="${3:-}"
-    [ -z "$_ep_json" ] && _ep_json="$(anidb_curl "https://anidb.app/api/frontend/anime/${_anime_id}/episodes" -A "$agent" -H "Accept: application/json" --max-time 10)"
-    _ep_id="$(printf '%s' "$_ep_json" | sed -nE "s|.*\"id\":([0-9]+),\"number\":${_ep_no}[,}].*|\1|p" | head -1)"
-    [ -z "$_ep_id" ] && return 1
-    _lang_pref="jpn"
-    [ "$mode" = "dub" ] && _lang_pref="eng"
-    _lang_json="$(anidb_curl "https://anidb.app/api/frontend/episode/${_ep_id}/languages" -A "$agent" -H "Accept: application/json" --max-time 10)"
-    _embed_url="$(printf '%s' "$_lang_json" | sed -nE "s|.*\"code\":\"${_lang_pref}\"[^}]*\"embed_url\":\"([^\"]*)\".*|\1|p;s|.*\"embed_url\":\"([^\"]*)\"[^}]*\"code\":\"${_lang_pref}\".*|\1|p" | head -1)"
-    [ -z "$_embed_url" ] && _embed_url="$(printf '%s' "$_lang_json" | sed -nE 's|.*"embed_url":"([^"]*)".*|\1|p' | head -1)"
-    _embed_url="$(printf '%s' "$_embed_url" | sed 's|\\/|/|g')"
-    [ -z "$_embed_url" ] && return 1
-    _page="$(anidb_curl "$_embed_url" -A "$agent" --max-time 10)"
-    printf '%s' "$_page" | sed -nE "s|.*file: '([^']*)'.*|\1|p" | head -1
+    anikoto_m3u8=""
+    anikoto_referer=""
+    anikoto_direct=0
+    anime_id_anikoto "$_slug" || return 1
+    anime_episodes_json_anikoto "$anikoto_numeric_id"
+    _anchor="$(printf '%s' "$anikoto_ep_json" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
+        | sed 's|<a |\n<a |g' | grep "data-num=\"${_ep_no}\"" | head -1)"
+    [ -z "$_anchor" ] && return 1
+    _ids="$(printf '%s' "$_anchor" | grep -oE 'data-ids="[^"]*"' | head -1 | cut -d'"' -f2)"
+    [ -z "$_ids" ] && return 1
+    _type="sub"
+    [ "$mode" = "dub" ] && _type="dub"
+    _servers="$(anikoto_curl "${provider_base}/ajax/server/list?servers=${_ids}")"
+    _links="$(printf '%s' "$_servers" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
+        | sed 's|<div class="type"|\n<div class="type"|g' \
+        | grep "data-type=\"${_type}\"" | head -1 \
+        | grep -oE 'data-link-id="[^"]*"' | cut -d'"' -f2)"
+    if [ -z "$_links" ]; then
+        # servers may have expired, ask the site to refresh them once
+        anikoto_curl "${provider_base}/check-server?manga_id=${anikoto_numeric_id}" >/dev/null 2>&1
+        sleep 2
+        _servers="$(anikoto_curl "${provider_base}/ajax/server/list?servers=${_ids}")"
+        _links="$(printf '%s' "$_servers" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
+            | sed 's|<div class="type"|\n<div class="type"|g' \
+            | grep "data-type=\"${_type}\"" | head -1 \
+            | grep -oE 'data-link-id="[^"]*"' | cut -d'"' -f2)"
+    fi
+    [ -z "$_links" ] && return 1
+    # resolve every server's embed URL up front and try direct-playable hosts first
+    _direct_urls=""
+    _proxied_urls=""
+    for _link in $_links; do
+        _embed="$(anikoto_curl "${provider_base}/ajax/server?get=${_link}")"
+        _embed_url="$(printf '%s' "$_embed" | sed -nE 's|.*"url": *"([^"]*)".*|\1|p' | sed 's|\\/|/|g')"
+        [ -z "$_embed_url" ] && continue
+        case "$_embed_url" in
+            *vidtube*|*akirax*) _direct_urls="$_direct_urls $_embed_url" ;;
+            *) _proxied_urls="$_proxied_urls $_embed_url" ;;
+        esac
+    done
+    for _embed_url in $_direct_urls $_proxied_urls; do
+        [ -z "$_embed_url" ] && continue
+        _embed_page="$(anikoto_curl -e "${provider_base}/" "$_embed_url")"
+        _file_id="$(printf '%s' "$_embed_page" | tr '\n' ' ' | sed -nE 's|.*id="megaplay-player"[^>]*data-id="([0-9]+)".*|\1|p')"
+        [ -z "$_file_id" ] && continue
+        _host="$(printf '%s' "$_embed_url" | sed -E 's|/stream/.*||')"
+        _src="$(anikoto_curl "${_host}/stream/getSources?id=${_file_id}")"
+        _m3u8="$(printf '%s' "$_src" | sed -nE 's|.*"sources":\{"file":"([^"]*)".*|\1|p' | sed 's|\\/|/|g')"
+        [ -z "$_m3u8" ] && continue
+        anikoto_m3u8="$_m3u8"
+        anikoto_referer="$_host"
+        case "$_embed_url" in
+            *vidtube*|*akirax*) anikoto_direct=1 ;;
+            *) anikoto_direct=0 ;;
+        esac
+        return 0
+    done
+    return 1
 }
 
-# gets m3u8 stream URL from anidb.app and selects quality
+anikoto_proxy_pid=""
+anikoto_proxy_url=""
+anikoto_proxy_variant=""
+anikoto_proxy_pidfile=""
+# serves an obfuscated HLS stream via a tiny local HTTP proxy so mpv/ffmpeg
+# can play it (megaplay segments are PNG-disguised TS chunks that need the
+# leading 252 bytes stripped; vidtube segments play fine without a proxy)
+start_anikoto_proxy() {
+    _variant_url="$1"
+    _strip_bytes="$2"
+    command -v python3 >/dev/null 2>&1 || die "anikototv.to stream needs python3 to play - install python3 or pick a different server"
+    _port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+    _tmpfile="$(mktemp -u "${TMPDIR:-/tmp}/anikoto-proxy-XXXXXX.py")"
+    _pidfile="$(mktemp -u "${TMPDIR:-/tmp}/anikoto-proxy-XXXXXX.pid")"
+    printf '%s\n' \
+        'import os,sys,urllib.request' \
+        'from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer' \
+        'VARIANT=sys.argv[1]; STRIP=int(sys.argv[2]); PORT=int(sys.argv[3])' \
+        'REF=os.environ.get("ANIKOTO_REFERER",""); UA=os.environ.get("ANIKOTO_UA","Mozilla/5.0")' \
+        'SEGS=[]' \
+        'def fetch(u):' \
+        '  req=urllib.request.Request(u,headers={"User-Agent":UA,"Referer":REF})' \
+        '  return urllib.request.urlopen(req,timeout=30).read()' \
+        'class H(BaseHTTPRequestHandler):' \
+        '  def log_message(self,*a): pass' \
+        '  def do_GET(self):' \
+        '    p=self.path.split("?")[0]' \
+        '    try:' \
+        '      if p=="/index.m3u8":' \
+        '        lines=fetch(VARIANT).decode("utf-8","replace").splitlines()' \
+        '        SEGS[:]=[l.strip() for l in lines if l.strip() and not l.strip().startswith("#") and "://" in l.strip()]' \
+        '        out=[]; i=0' \
+        '        for line in lines:' \
+        '          s=line.strip()' \
+        '          if s and not s.startswith("#") and "://" in s:' \
+        '            out.append("http://127.0.0.1:%d/seg/%d"%(PORT,i)); i+=1' \
+        '          else: out.append(line)' \
+        '        data="\n".join(out).encode()' \
+        '        self.send_response(200); self.send_header("Content-Type","application/vnd.apple.mpegurl"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data)' \
+        '      elif p.startswith("/seg/"):' \
+        '        idx=int(p.rsplit("/",1)[1]); raw=fetch(SEGS[idx]); data=raw[STRIP:] if STRIP else raw' \
+        '        self.send_response(200); self.send_header("Content-Type","video/mp2t"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data)' \
+        '      else: self.send_response(404); self.end_headers()' \
+        '    except Exception:' \
+        '      try: self.send_response(502); self.end_headers()' \
+        '      except Exception: pass' \
+        'if __name__=="__main__":' \
+        '  ThreadingHTTPServer(("127.0.0.1",PORT),H).serve_forever()' >"$_tmpfile"
+    # daemonize (orphan it) so the shell's `wait` doesn't block on it
+    (ANIKOTO_REFERER="${anikoto_referer}/" ANIKOTO_UA="$agent" python3 "$_tmpfile" "$_variant_url" "$_strip_bytes" "$_port" &
+        printf '%s' "$!" >"$_pidfile")
+    sleep 1
+    anikoto_proxy_pid="$(cat "$_pidfile" 2>/dev/null)"
+    anikoto_proxy_url="http://127.0.0.1:${_port}/index.m3u8"
+    anikoto_proxy_pidfile="$_pidfile"
+}
+
+# gets m3u8 stream URL from the active provider and selects quality
 get_episode_url() {
     links=""
 
-    # try anidb.app
-    _anidb_id="${id##*-}"
-    if [ -n "$_anidb_id" ]; then
-        anime_episodes_json "$_anidb_id"
-        _m3u8="$(get_anidb_m3u8 "$_anidb_id" "$ep_no" "$ep_json")"
-        if [ -n "$_m3u8" ]; then
-            _m3u8_content="$(anidb_curl "$_m3u8" -A "$agent" --max-time 10)"
-            if printf '%s' "$_m3u8_content" | grep -q "EXTM3U"; then
-                links="$(printf '%s' "$_m3u8_content" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|; /EXT-X-I-FRAME/d' | sort -nr)"
-                [ -n "$links" ] && printf "\033[1;32m%s\033[0m Links Fetched\n" "anidb.app" 1>&2
-            fi
+    if get_anikoto_m3u8 "$id" "$ep_no"; then
+        _m3u8_content="$(anikoto_curl -e "${anikoto_referer}/" "$anikoto_m3u8")"
+        if printf '%s' "$_m3u8_content" | grep -q "EXTM3U"; then
+            _base="$(printf '%s' "$anikoto_m3u8" | sed 's|[^/]*$||')"
+            links="$(printf '%s' "$_m3u8_content" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|; /EXT-X-I-FRAME/d' | sort -nr)"
+            # variant URLs may be relative - expand them against the master's base
+            links="$(printf '%s' "$links" | awk -v b="$_base" -F'>' 'BEGIN{OFS=">"} $2 !~ /^https?:/ {print $1, b $2} $2 ~ /^https?:/ {print}')"
+            [ -n "$links" ] && printf "\033[1;32m%s\033[0m Links Fetched\n" "anikototv.to" 1>&2
         fi
     fi
 
@@ -297,7 +429,7 @@ time_until_next_ep() {
 # PLAYING
 
 process_hist_entry() {
-    ep_list=$(episodes_list_anidb "$id")
+    ep_list=$(episodes_list_anikoto "$id")
     latest_ep=$(printf "%s\n" "$ep_list" | tail -n1)
     title=$(printf "%s\n" "$title" | sed "s|[0-9]\+ episodes|${latest_ep} episodes|")
     ep_no=$(printf "%s" "$ep_list" | sed -n "/^${ep_no}$/{n;p;}")
@@ -507,11 +639,9 @@ play() {
 # setup
 agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0"
 
-# browser-ish transport, no curl-impersonate needed
-ciphers='ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305'
-tls13_ciphers='TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256'
 curl_exe=$(dep_ch_failover "curl_chrome136,curl_firefox135,curl_ff117,curl") || die "Program curl not found"
 mode="${ANI_CLI_MODE:-sub}"
+provider="${ANI_CLI_PROVIDER:-anikoto}"
 download_dir="${ANI_CLI_DOWNLOAD_DIR:-.}"
 log_episode="${ANI_CLI_LOG:-1}"
 quality="${ANI_CLI_QUALITY:-best}"
@@ -565,6 +695,11 @@ while [ $# -gt 0 ]; do
         -q | --quality)
             [ $# -lt 2 ] && die "missing argument!"
             quality="$2"
+            shift
+            ;;
+        -p | --provider)
+            [ $# -lt 2 ] && die "missing argument!"
+            provider="$2"
             shift
             ;;
         -S | --select-nth)
@@ -621,7 +756,12 @@ done
 [ "$menu_program" = "fzf" ] && menu_multi_flag="-m"
 [ "$menu_program" = "rofi" ] && menu_multi_flag="-multi-select"
 
-info "Using provider: anidb"
+case "$provider" in
+    anikoto) ;;
+    *) die "Unknown provider: $provider (supported: anikoto)" ;;
+esac
+
+info "Using provider: $provider"
 
 info "Checking dependencies..."
 dep_ch "curl"
@@ -639,6 +779,7 @@ case "$player_function" in
 esac
 
 trap 'cleanup; exit 1' INT HUP TERM
+trap 'cleanup' EXIT
 
 # searching
 case "$search" in
@@ -651,10 +792,10 @@ case "$search" in
         [ -z "${index##*[!0-9]*}" ] || id=$(printf "%s" "$anime_list" | sed -n "${index}p" | cut -f1)
         [ -z "$id" ] && exit 1
         title=$(printf "%s" "$anime_list" | grep "$id" | cut -f2 | sed 's/ - episode.*//')
-        ep_list=$(episodes_list_anidb "$id")
+        ep_list=$(episodes_list_anikoto "$id")
         ep_no=$(printf "%s" "$anime_list" | grep "$id" | cut -f2 | sed -nE 's/.*- episode (.+)$/\1/p')
         anime_title="$(printf "%s" "$title" | cut -d'(' -f1 | tr -d '[:punct:]')"
-        anidb_desc "$id" || true
+        anikoto_desc "$id" || true
         printf "%s" "$anime_list" | grep "$id" | cut -f2 | grep -q "(up to date)" && time_until_next_ep "$anime_title"
         ;;
     *)
@@ -671,7 +812,7 @@ case "$search" in
 
         query=$(printf "%s" "$query" | sed "s| |+|g")
 
-        anime_list=$(search_anidb "$query")
+        anime_list=$(search_anikoto "$query")
         [ -z "$anime_list" ] && die "No results found!"
         # check if select-nth index is a valid number, if so skip interactive selection
         [ "$index" -eq "$index" ] 2>/dev/null && result=$(printf "%s" "$anime_list" | sed -n "${index}p")
@@ -680,9 +821,10 @@ case "$search" in
         title="$(printf "%s" "$result" | cut -f2)"
         anime_title="$(printf "%s" "$title" | cut -d'(' -f1 | tr -d '[:punct:]')"
         id="$(printf "%s" "$result" | cut -f1)"
-        anidb_desc "$(printf "%s" "$result" | cut -f1)" || true
-        ep_list=$(episodes_list_anidb "$id")
-        [ -n "$ep_no" ] && [ "$ep_no" -ne -1 ] && printf "%s" "$ep_list" | grep -v -q "^$ep_no$" && die "Invalid Episode Selection"
+        anikoto_desc "$(printf "%s" "$result" | cut -f1)" || true
+        ep_list=$(episodes_list_anikoto "$id")
+        [ -z "$ep_list" ] && die "Could not fetch episodes for \"$title\" - it may be unavailable on anikototv.to, try another result"
+        [ -n "$ep_no" ] && [ "$ep_no" -ne -1 ] && ! printf "%s" "$ep_list" | grep -q "^$ep_no$" && die "Invalid Episode Selection"
         [ -z "$ep_no" ] && ep_no=$(printf "%s" "$ep_list" | nth "Select episode: " "$menu_multi_flag")
         [ -z "$ep_no" ] && die "Invalid/No Episode Selection"
         ;;
@@ -716,7 +858,7 @@ while cmd=$(printf 'next\nreplay\nprevious\nselect%s\nchange_quality\nquit' "$se
             title="$(printf "%s" "$new_anime" | cut -f2)"
             anime_title="$(printf "%s" "$title" | cut -d'(' -f1 | tr -d '[:punct:]')"
             id="$(printf "%s" "$new_anime" | cut -f1)"
-            ep_list=$(episodes_list_anidb "$id")
+            ep_list=$(episodes_list_anikoto "$id")
             ep_no=$(printf "%s" "$ep_list" | nth "Select episode: " "$menu_multi_flag")
             [ -z "$ep_no" ] && die "Invalid/No Episode Selection"
             ;;

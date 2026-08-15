@@ -37,6 +37,9 @@ Show summary of options.
 \fB\-q | --quality\fR \fI\,<best|worst|360|480|720|1080>\/\fR
 Set the video quality. Default quality is best.
 .TP
+ \fB\-p | --provider\fR \fI\,<anikoto>\/\fR
+Choose the source provider. Default provider is anikoto.
+.TP
 \fB\-s | --syncplay\fR
 Watch anime together with friends, using Syncplay (works with mpv only).
 .TP
@@ -77,6 +80,9 @@ ani-cli v4 uses environment variables to control unstable/untested and niche fea
 .TP
 \fBANI_CLI_MODE\fR
 Controls the scraped media's mode, valid options are sub or dub. Default is sub.
+.TP
+\fBANI_CLI_PROVIDER\fR
+Controls the source provider. Valid option is anikoto. Default is anikoto.
 .TP
 \fBANI_CLI_DOWNLOAD_DIR\fR
 Controls the directory where files are downloaded. Default is the current dir.
