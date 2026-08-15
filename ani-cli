@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version_number="5.0.3-anikoto"
+version_number="5.0.4-anikoto-fifo"
 
 # UI
 
@@ -164,13 +164,7 @@ where_mpv() {
 cleanup() {
     tput sgr0               # clears colors
     rm -f "${histfile}.new" # remove temp logfile
-    if [ -n "$anikoto_proxy_pid" ]; then
-        kill "$anikoto_proxy_pid" 2>/dev/null
-        wait "$anikoto_proxy_pid" 2>/dev/null
-        anikoto_proxy_pid=""
-    fi
-    [ -n "$anikoto_proxy_pidfile" ] && rm -f "$anikoto_proxy_pidfile"
-    rm -f "${TMPDIR:-/tmp}/anikoto-proxy-"*.py "${TMPDIR:-/tmp}/anikoto-proxy-"*.pid
+    anikoto_feed_cleanup
 }
 
 # SCRAPING
@@ -186,16 +180,14 @@ select_quality() {
     refr_flag="--referrer=${anikoto_referer:-$provider_base}/"
     episode=$(printf "%s" "$result" | cut -d'>' -f2)
 
-    # obfuscated streams (megaplay) need the local decode proxy to play
+    # obfuscated streams (megaplay) need the local FIFO feed to play
     if [ "$anikoto_direct" != 1 ] && [ -n "$episode" ]; then
-        if [ -n "$anikoto_proxy_pid" ] && [ "$anikoto_proxy_variant" != "$episode" ]; then
-            kill "$anikoto_proxy_pid" 2>/dev/null
-            anikoto_proxy_pid=""
-            anikoto_proxy_url=""
+        if [ -n "$anikoto_feed_pid" ] && [ "$anikoto_feed_variant" != "$episode" ]; then
+            anikoto_feed_cleanup
         fi
-        [ -z "$anikoto_proxy_pid" ] && start_anikoto_proxy "$episode" 252
-        anikoto_proxy_variant="$episode"
-        episode="$anikoto_proxy_url"
+        [ -z "$anikoto_feed_pid" ] && start_anikoto_fifo "$episode"
+        anikoto_feed_variant="$episode"
+        episode="$anikoto_feed_m3u8"
     fi
 }
 
@@ -332,75 +324,106 @@ get_anikoto_m3u8() {
     return 1
 }
 
-anikoto_proxy_pid=""
-anikoto_proxy_url=""
-anikoto_proxy_variant=""
-anikoto_proxy_pidfile=""
-# serves an obfuscated HLS stream via a tiny local HTTP proxy so mpv/ffmpeg
-# can play it (megaplay segments are PNG-disguised TS chunks with a junk
-# prefix; the proxy auto-detects the real TS start instead of hardcoding the
-# prefix length, so it survives the CDN changing the offset; vidtube segments
-# play fine without a proxy)
-start_anikoto_proxy() {
+anikoto_feed_pid=""
+anikoto_feed_dir=""
+anikoto_feed_m3u8=""
+anikoto_feed_variant=""
+# finds where the real MPEG-TS stream starts inside an obfuscated segment:
+# 4 sync bytes (0x47 = 71) spaced 188 bytes apart, prints the 0-based offset
+detect_ts_offset() {
+    od -An -v -t u1 "$1" 2>/dev/null | tr -s '[:space:]' '\n' | awk '
+        NF { b[n++] = $1 }
+        END {
+            for (o = 0; o + 564 < n; o++) {
+                if (b[o] == 71 && b[o + 188] == 71 && b[o + 376] == 71 && b[o + 564] == 71) { print o; exit }
+            }
+        }'
+}
+
+# background feeder: downloads each obfuscated segment, strips the junk prefix
+# and writes clean MPEG-TS into a FIFO that a local m3u8 points at, so
+# mpv/ffmpeg can play the stream (pure POSIX shell, no python3 needed)
+anikoto_feed_stream() {
+    _dir="$1"
+    _off="$2"
+    _i=0
+    if [ -s "$_dir/probe.raw" ]; then
+        tail -c +$((_off + 1)) "$_dir/probe.raw" > "$_dir/seg0.ts"
+        rm -f "$_dir/probe.raw"
+        _i=1
+    fi
+    while IFS= read -r _url; do
+        [ -z "$_url" ] && continue
+        curl -sL -m 60 -A "$agent" -e "${anikoto_referer}/" "$_url" \
+            | tail -c +$((_off + 1)) > "$_dir/seg${_i}.ts"
+        _i=$((_i + 1))
+    done < "$_dir/segments.txt"
+}
+
+# builds a local m3u8 + FIFO farm for an obfuscated variant stream and starts
+# the feeder; the junk prefix length is auto-detected like the old proxy did
+start_anikoto_fifo() {
     _variant_url="$1"
-    _strip_bytes="$2"
-    command -v python3 >/dev/null 2>&1 || die "anikototv.to stream needs python3 to play - install python3 or pick a different server"
-    _port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
-    _tmpfile="$(mktemp -u "${TMPDIR:-/tmp}/anikoto-proxy-XXXXXX.py")"
-    _pidfile="$(mktemp -u "${TMPDIR:-/tmp}/anikoto-proxy-XXXXXX.pid")"
-    printf '%s\n' \
-        'import os,sys,urllib.request' \
-        'from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer' \
-        'VARIANT=sys.argv[1]; STRIP=int(sys.argv[2]); PORT=int(sys.argv[3])' \
-        'REF=os.environ.get("ANIKOTO_REFERER",""); UA=os.environ.get("ANIKOTO_UA","Mozilla/5.0")' \
-        'SEGS=[]; OFF=None' \
-        'def fetch(u):' \
-        '  req=urllib.request.Request(u,headers={"User-Agent":UA,"Referer":REF})' \
-        '  return urllib.request.urlopen(req,timeout=30).read()' \
-        'def detect(raw):' \
-        '  # find the MPEG-TS start: N sync bytes (0x47) spaced 188 bytes apart' \
-        '  n=len(raw)' \
-        '  for o in range(min(n-752,65536)):' \
-        '    if raw[o]!=0x47 or o+564>=n: continue' \
-        '    if raw[o+188]==0x47 and raw[o+376]==0x47 and raw[o+564]==0x47: return o' \
-        '  return -1' \
-        'class H(BaseHTTPRequestHandler):' \
-        '  def log_message(self,*a): pass' \
-        '  def do_GET(self):' \
-        '    p=self.path.split("?")[0]' \
-        '    try:' \
-        '      if p=="/index.m3u8":' \
-        '        lines=fetch(VARIANT).decode("utf-8","replace").splitlines()' \
-        '        SEGS[:]=[l.strip() for l in lines if l.strip() and not l.strip().startswith("#") and "://" in l.strip()]' \
-        '        out=[]; i=0' \
-        '        for line in lines:' \
-        '          s=line.strip()' \
-        '          if s and not s.startswith("#") and "://" in s:' \
-        '            out.append("http://127.0.0.1:%d/seg/%d"%(PORT,i)); i+=1' \
-        '          else: out.append(line)' \
-        '        data="\n".join(out).encode()' \
-        '        self.send_response(200); self.send_header("Content-Type","application/vnd.apple.mpegurl"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data)' \
-        '      elif p.startswith("/seg/"):' \
-        '        global OFF' \
-        '        idx=int(p.rsplit("/",1)[1]); raw=fetch(SEGS[idx])' \
-        '        if OFF is None: OFF=detect(raw)' \
-        '        if OFF>0: data=raw[OFF:]' \
-        '        elif STRIP: data=raw[STRIP:]' \
-        '        else: data=raw' \
-        '        self.send_response(200); self.send_header("Content-Type","video/mp2t"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data)' \
-        '      else: self.send_response(404); self.end_headers()' \
-        '    except Exception:' \
-        '      try: self.send_response(502); self.end_headers()' \
-        '      except Exception: pass' \
-        'if __name__=="__main__":' \
-        '  ThreadingHTTPServer(("127.0.0.1",PORT),H).serve_forever()' >"$_tmpfile"
+    _pl="$(anikoto_curl -e "${anikoto_referer}/" "$_variant_url")"
+    printf '%s' "$_pl" | grep -q "EXTM3U" || { warn "Failed to fetch HLS playlist for stream"; return 1; }
+    anikoto_feed_dir="$(mktemp -d "${TMPDIR:-/tmp}/anikoto-fifo-XXXXXX")" || return 1
+    : > "$anikoto_feed_dir/segments.txt"
+    _i=0
+    printf '%s\n' "$_pl" | while IFS= read -r _line; do
+        _s="$(printf '%s\n' "$_line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        case "$_s" in
+            \#*) printf '%s\n' "$_line" ;;
+            *)
+                printf '%s\n' "$anikoto_feed_dir/seg${_i}.ts"
+                mkfifo "$anikoto_feed_dir/seg${_i}.ts"
+                printf '%s\n' "$_s" >> "$anikoto_feed_dir/segments.txt"
+                _i=$((_i + 1))
+                ;;
+        esac
+    done > "$anikoto_feed_dir/playlist.m3u8"
+
+    # auto-detect the junk offset from the first segment; the background feeder
+    # feeds seg0 from this probe and streams the rest (writing into a FIFO
+    # before the player opens it would block, so that must happen in background)
+    _off=252
+    _first="$(head -n1 "$anikoto_feed_dir/segments.txt")"
+    if [ -n "$_first" ]; then
+        curl -sL -m 60 -A "$agent" -e "${anikoto_referer}/" "$_first" > "$anikoto_feed_dir/probe.raw"
+        if [ -s "$anikoto_feed_dir/probe.raw" ]; then
+            _detected="$(detect_ts_offset "$anikoto_feed_dir/probe.raw")"
+            [ -n "$_detected" ] && [ "$_detected" -gt 0 ] && _off="$_detected"
+        else
+            rm -f "$anikoto_feed_dir/probe.raw"
+        fi
+    fi
+    [ ! -s "$anikoto_feed_dir/segments.txt" ] \
+        && { warn "No segments in HLS playlist for stream"; rm -rf "$anikoto_feed_dir"; anikoto_feed_dir=""; return 1; }
+
+    anikoto_feed_m3u8="$anikoto_feed_dir/playlist.m3u8"
+    _pidfile="$anikoto_feed_dir/feed.pid"
     # daemonize (orphan it) so the shell's `wait` doesn't block on it
-    (ANIKOTO_REFERER="${anikoto_referer}/" ANIKOTO_UA="$agent" python3 "$_tmpfile" "$_variant_url" "$_strip_bytes" "$_port" &
+    (anikoto_feed_stream "$anikoto_feed_dir" "$_off" &
         printf '%s' "$!" >"$_pidfile")
     sleep 1
-    anikoto_proxy_pid="$(cat "$_pidfile" 2>/dev/null)"
-    anikoto_proxy_url="http://127.0.0.1:${_port}/index.m3u8"
-    anikoto_proxy_pidfile="$_pidfile"
+    anikoto_feed_pid="$(cat "$_pidfile" 2>/dev/null)"
+    if [ -z "$anikoto_feed_pid" ]; then
+        warn "Failed to start stream feeder"
+        rm -rf "$anikoto_feed_dir"
+        anikoto_feed_dir=""
+        return 1
+    fi
+}
+
+anikoto_feed_cleanup() {
+    if [ -n "$anikoto_feed_pid" ]; then
+        kill "$anikoto_feed_pid" 2>/dev/null
+        wait "$anikoto_feed_pid" 2>/dev/null
+        anikoto_feed_pid=""
+    fi
+    [ -n "$anikoto_feed_dir" ] && rm -rf "$anikoto_feed_dir"
+    anikoto_feed_dir=""
+    anikoto_feed_m3u8=""
+    anikoto_feed_variant=""
 }
 
 # gets m3u8 stream URL from the active provider and selects quality
