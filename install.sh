@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-REPO="VVAT3R/ani-cli"
-BRANCH="master"
+REPO="VVAT3R/ani-cli-fork"
+BRANCH="ani-cli-anikoto"
 RAW="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
 
 if echo "$PREFIX" | grep -q "com.termux"; then
