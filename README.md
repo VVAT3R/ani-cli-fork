@@ -17,14 +17,7 @@
 
 ---
 
-A fork of [pystardust/ani-cli](https://github.com/pystardust/ani-cli) built around **anidb.app** — direct HLS streams, no crypto dependencies.
-
-### What makes this fork different?
-
-- **anidb.app** source — direct `.m3u8` streams, no crypto dependencies
-- Watch history with resume position tracking
-- Batch download with progress indicator
-- Install & uninstall scripts included
+A fork of [pystardust/ani-cli](https://github.com/pystardust/ani-cli) built around **Anikoto** — Experimental Stage
 
 ### Quick start
 
