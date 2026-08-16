@@ -19,7 +19,7 @@ A standalone POSIX shell script to browse, search and watch anime from the comma
 
 ### How koto-cli came to be
 
-koto-cli started as a fork of ani-cli whose provider didn't serve the site I wanted to watch. So I reverse-engineered [anikototv.to](https://anikototv.to) — inspecting its network requests, HTML and scripts in the browser devtools — and wrote an **anikoto** provider on top of ani-cli's structure. That work lived on the `ani-cli-anikoto` branch, and once it was stable I spun it out into this standalone repo so it can live on its own, with no ties to ani-cli.
+koto-cli started as a fork of ani-cli whose provider didn't serve the site I wanted to watch. So I reverse-engineered [anikototv.to](https://anikototv.to) — inspecting its network requests, HTML and scripts in the browser devtools — and wrote an **anikoto** provider on top of ani-cli's structure. That work lived on the `ani-cli-anikoto` branch, and I spun it out into this standalone repo so it can live on its own, with no ties to ani-cli. It's still at an experimental stage — expect rough edges.
 
 The whole pipeline runs in plain POSIX shell — no API keys, no crypto, no python3:
 
