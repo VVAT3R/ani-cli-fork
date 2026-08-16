@@ -419,7 +419,9 @@ start_anikoto_fifo() {
         curl -sL -m 60 -A "$agent" -e "${anikoto_referer}/" "$_first" > "$anikoto_feed_dir/probe.raw"
         if [ -s "$anikoto_feed_dir/probe.raw" ]; then
             _detected="$(detect_ts_offset "$anikoto_feed_dir/probe.raw")"
-            [ -n "$_detected" ] && [ "$_detected" -gt 0 ] && _off="$_detected"
+            # a detected offset of 0 means the segment is already clean MPEG-TS,
+            # so nothing should be stripped (only keep 252 when detection fails)
+            [ -n "$_detected" ] && _off="$_detected"
         else
             rm -f "$anikoto_feed_dir/probe.raw"
         fi
