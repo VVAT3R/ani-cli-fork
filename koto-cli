@@ -118,7 +118,7 @@ version_info() {
 
 update_script() {
     info "[branch:$branch] Checking for Update.."
-    update="$(curl --fail-with-body -sL -A "$agent" "https://raw.githubusercontent.com/VVAT3R/ani-cli/$branch/ani-cli")" || die "[branch:$branch] Connection error: $update"
+    update="$(curl --fail-with-body -sL -A "$agent" "https://raw.githubusercontent.com/VVAT3R/koto-cli/$branch/koto-cli")" || die "[branch:$branch] Connection error: $update"
     new_version="$(printf "%s" "$update" | sed -nE 's|^version_number="([^"]+)"$|\1|p')"
     [ -z "$new_version" ] && die "[branch:$branch] Invalid response."
     printf "%s" "$update" | grep -q "^version_number" || die "[branch:$branch] Invalid Response."
@@ -551,7 +551,7 @@ backup_old_hist() {
 }
 
 get_mpv_position() {
-    _socket="/tmp/ani-cli-mpv-$$"
+    _socket="/tmp/koto-cli-mpv-$$"
     if [ -S "$_socket" ]; then
         _pos=$(printf '{ "command": ["get_property", "time-pos"] }\n' | socat - UNIX-CONNECT:"$_socket" 2>/dev/null | sed -nE 's|.*"data":([0-9.]+).*|\1|p')
         [ -n "$_pos" ] && printf "%s" "$_pos" && return 0
@@ -592,7 +592,7 @@ android_mpv() {
 }
 
 play_episode() {
-    [ "$log_episode" = 1 ] && [ "$player_function" != "debug" ] && [ "$player_function" != "download" ] && command -v logger >/dev/null && logger -t ani-cli "${anime_title}${ep_no}"
+    [ "$log_episode" = 1 ] && [ "$player_function" != "debug" ] && [ "$player_function" != "download" ] && command -v logger >/dev/null &&         logger -t koto-cli "${anime_title}${ep_no}"
     [ "$skip_intro" = 1 ] && skip_flag="$(ani-skip -q "$mal_id" -e "$canon_ep_no")"
     [ -z "$episode" ] && get_episode_url
 
@@ -610,7 +610,7 @@ play_episode() {
     _mpv_socket=""
     case "$player_function" in
         mpv*|flatpak_mpv)
-            _mpv_socket="/tmp/ani-cli-mpv-$$"
+            _mpv_socket="/tmp/koto-cli-mpv-$$"
             ;;
     esac
 
@@ -735,35 +735,35 @@ play() {
 agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0"
 
 curl_exe=$(dep_ch_failover "curl_chrome136,curl_firefox135,curl_ff117,curl") || die "Program curl not found"
-mode="${ANI_CLI_MODE:-sub}"
-provider="${ANI_CLI_PROVIDER:-anikoto}"
-download_dir="${ANI_CLI_DOWNLOAD_DIR:-.}"
-log_episode="${ANI_CLI_LOG:-1}"
-quality="${ANI_CLI_QUALITY:-best}"
+mode="${KOTO_CLI_MODE:-sub}"
+provider="${KOTO_CLI_PROVIDER:-anikoto}"
+download_dir="${KOTO_CLI_DOWNLOAD_DIR:-.}"
+log_episode="${KOTO_CLI_LOG:-1}"
+quality="${KOTO_CLI_QUALITY:-best}"
 case "$(uname -a | cut -d " " -f 1,3-)" in
-    *Darwin*) player_function="${ANI_CLI_PLAYER:-$(where_iina)}" ;;   # mac OS
-    *ndroid*) player_function="${ANI_CLI_PLAYER:-android_mpv}" ;;     # Android OS (termux)
-    *MINGW* | *WSL2*) player_function="${ANI_CLI_PLAYER:-mpv.exe}" ;; # Windows OS
-    *ish*) player_function="${ANI_CLI_PLAYER:-iSH}" ;;                # iOS (iSH)
-    *) player_function="${ANI_CLI_PLAYER:-$(where_mpv)}" ;;           # Linux OS
+    *Darwin*) player_function="${KOTO_CLI_PLAYER:-$(where_iina)}" ;;   # mac OS
+    *ndroid*) player_function="${KOTO_CLI_PLAYER:-android_mpv}" ;;     # Android OS (termux)
+    *MINGW* | *WSL2*) player_function="${KOTO_CLI_PLAYER:-mpv.exe}" ;; # Windows OS
+    *ish*) player_function="${KOTO_CLI_PLAYER:-iSH}" ;;                # iOS (iSH)
+    *) player_function="${KOTO_CLI_PLAYER:-$(where_mpv)}" ;;           # Linux OS
 esac
 
-player_extra_flags="${ANI_CLI_PLAYER_FLAGS:-}"
-no_detach="${ANI_CLI_NO_DETACH:-0}"
-exit_after_play="${ANI_CLI_EXIT_AFTER_PLAY:-0}"
-skip_intro="${ANI_CLI_SKIP_INTRO:-0}"
-menu_program="${ANI_CLI_MENU:-fzf}"
-menu_extra_flags="${ANI_CLI_MENU_FLAGS:-}"
+player_extra_flags="${KOTO_CLI_PLAYER_FLAGS:-}"
+no_detach="${KOTO_CLI_NO_DETACH:-0}"
+exit_after_play="${KOTO_CLI_EXIT_AFTER_PLAY:-0}"
+skip_intro="${KOTO_CLI_SKIP_INTRO:-0}"
+menu_program="${KOTO_CLI_MENU:-fzf}"
+menu_extra_flags="${KOTO_CLI_MENU_FLAGS:-}"
 
 [ -t 0 ] || { command -v rofi >/dev/null 2>&1 && menu_program=rofi; }
 [ -t 0 ] || { command -v dmenu >/dev/null 2>&1 && menu_program=dmenu; }
 
-hist_dir="${ANI_CLI_HIST_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ani-cli}"
+hist_dir="${KOTO_CLI_HIST_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/koto-cli}"
 [ ! -d "$hist_dir" ] && mkdir -p "$hist_dir"
-histfile="$hist_dir/ani-hsts"
+histfile="$hist_dir/koto-hsts"
 [ ! -f "$histfile" ] && : >"$histfile"
 search="search"
-branch="${ANI_CLI_BRANCH:-master}"
+branch="${KOTO_CLI_BRANCH:-main}"
 resume_enabled=0
 batch_mode=0
 
@@ -820,7 +820,7 @@ while [ $# -gt 0 ]; do
         -l | --logview)
             case "$(uname -s)" in
                 Darwin*) log show --predicate 'process == "logger"' ;;
-                Linux*) journalctl -t ani-cli ;;
+                Linux*) journalctl -t koto-cli ;;
                 *) die "Logger not implemented for your platform" ;;
             esac
             exit 0
@@ -971,7 +971,7 @@ while cmd=$(printf 'next\nreplay\nprevious\nselect%s\nchange_quality\nquit' "$se
     play
 done
 
-# ani-cli
+# koto-cli
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -986,4 +986,4 @@ done
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
-# Project repository: https://github.com/VVAT3R/ani-cli
+# Project repository: https://github.com/VVAT3R/koto-cli

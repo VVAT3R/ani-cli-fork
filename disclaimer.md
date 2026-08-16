@@ -3,7 +3,7 @@
 
 <div align="center">
 
-<h2>This project: ani-cli</h2>
+<h2>This project: koto-cli</h2>
 
 <br>
 
@@ -33,7 +33,7 @@ This project has no control on the content it is serving, using copyrighted cont
 A browser is a tool, and the maliciousness of the tool is directly based on the user.
 </b>
 
-This project uses client-side content access mechanisms. Hence, the copyright infrigements or DMCA in this project's regards are to be forwarded to the associated site by the associated notifier of any such claims. As of writing this is [allanime](https://allanime.to)
+This project uses client-side content access mechanisms. Hence, the copyright infrigements or DMCA in this project's regards are to be forwarded to the associated site by the associated notifier of any such claims. As of writing this is [anikototv.to](https://anikototv.to)
 
 <b> Do not harass the maintainer. </b>
 
@@ -42,5 +42,5 @@ Contacting the maintainer
 </h2>
 <br>
 
-Begin by making a GitHub issue or sending an email to port19@port19.xyz
+Begin by making a GitHub issue on the [koto-cli repository](https://github.com/VVAT3R/koto-cli/issues)
 </div>

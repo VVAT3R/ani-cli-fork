@@ -6,10 +6,10 @@ labels: 'priority 2: medium, type: bug'
 assignees: ''
 
 ---
-## **Make sure you are on the latest version by running `ani-cli -U`**
+## **Make sure you are on the latest version by running `koto-cli -U`**
 
 **Metadata (please complete the following information)**
-Version: [e.g. 4.7.6, run `ani-cli -V` to find out]
+Version: [e.g. 4.7.6, run `koto-cli -V` to find out]
 OS: [e.g. Windows 10 / Linux Mint 20.3]
 Shell: [e.g. zsh, run `readlink /bin/sh` to get your shell]
 Anime: [e.g. flcl] (if applicable)
@@ -20,7 +20,7 @@ It says something about an unsupported protocol, see screenshot.
 
 **Steps To Reproduce**
 
-1. Run `ani-cli -d flcl`
+1. Run `koto-cli -d flcl`
 2. Choose 2 (fooly-cooly)
 3. Choose episode 1
 

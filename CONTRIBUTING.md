@@ -16,7 +16,6 @@
 
 ## How else can I help?
 
-- Join the [discord](https://discord.gg/aqu7GpqVmR)
 - Take part in troubleshooting and testing
 - Star the repo
 - Follow the maintainers

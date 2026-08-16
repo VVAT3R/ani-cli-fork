@@ -1,12 +1,10 @@
 <div align="center">
-  <h1>ani-cli</h1>
+  <h1>koto-cli</h1>
   <p><strong>Watch anime from your terminal.</strong></p>
 
   <p>
-    <a href="https://github.com/VVAT3R/ani-cli/wiki/Installation">Install</a> •
-    <a href="https://github.com/VVAT3R/ani-cli/wiki/Usage">Usage</a> •
-    <a href="https://github.com/VVAT3R/ani-cli/wiki/FAQ">FAQ</a> •
-    <a href="https://github.com/VVAT3R/ani-cli/wiki">Wiki</a>
+    <a href="https://github.com/VVAT3R/koto-cli">GitHub</a> •
+    <a href="https://github.com/VVAT3R/koto-cli/issues">Issues</a>
   </p>
 
   <p>
@@ -17,11 +15,12 @@
 
 ---
 
-A fork of [pystardust/ani-cli](https://github.com/pystardust/ani-cli) built around **anidb.app** — direct HLS streams, no crypto dependencies.
+A standalone POSIX shell script to browse, search and watch anime from the command-line, inspired by [pystardust/ani-cli](https://github.com/pystardust/ani-cli). It scrapes **anikototv.to** for direct HLS streams — no crypto dependencies.
 
-### What makes this fork different?
+### Features
 
-- **anidb.app** source — direct `.m3u8` streams, no crypto dependencies
+- **anikoto** source — direct `.m3u8` streams, no crypto dependencies
+- Sub and dub playback
 - Watch history with resume position tracking
 - Batch download with progress indicator
 - Install & uninstall scripts included
@@ -29,15 +28,13 @@ A fork of [pystardust/ani-cli](https://github.com/pystardust/ani-cli) built arou
 ### Quick start
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/VVAT3R/ani-cli-fork/ani-cli-anikoto/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/VVAT3R/koto-cli/main/install.sh | sudo sh
 ```
 
-### Learn more
+### Usage
 
-| Topic | Link |
-|-------|------|
-| 📦 Installation | [Installation guide](https://github.com/VVAT3R/ani-cli/wiki/Installation) |
-| 🎮 Usage & flags | [Usage guide](https://github.com/VVAT3R/ani-cli/wiki/Usage) |
-| ❓ Questions | [FAQ](https://github.com/VVAT3R/ani-cli/wiki/FAQ) |
-| 🗑️ Uninstall | [Uninstallation](https://github.com/VVAT3R/ani-cli/wiki/Uninstallation) |
-| 🔄 Update | [Update & Patch](https://github.com/VVAT3R/ani-cli/wiki/Update-and-Patch) |
+```sh
+koto-cli [options] [query]
+```
+
+Run `koto-cli -h` for the full list of options.
