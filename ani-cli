@@ -261,6 +261,21 @@ anikoto_desc() {
 anikoto_m3u8=""
 anikoto_referer=""
 anikoto_direct=0
+# extract server link-ids from a servers JSON; each type is tried in order and
+# all matching links are returned (hsub = hard subs, sub = soft subs, dub)
+anikoto_server_links() {
+    _json="$1"
+    _types="$2"
+    _all=""
+    for _t in $_types; do
+        _found="$(printf '%s' "$_json" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
+            | sed 's|<div class="type"|\n<div class="type"|g' \
+            | grep "data-type=\"${_t}\"" | head -1 \
+            | grep -oE 'data-link-id="[^"]*"' | cut -d'"' -f2)"
+        [ -n "$_found" ] && _all="$_all $_found"
+    done
+    printf '%s' "$_all"
+}
 get_anikoto_m3u8() {
     _slug="$1"
     _ep_no="$2"
@@ -274,22 +289,20 @@ get_anikoto_m3u8() {
     [ -z "$_anchor" ] && return 1
     _ids="$(printf '%s' "$_anchor" | grep -oE 'data-ids="[^"]*"' | head -1 | cut -d'"' -f2)"
     [ -z "$_ids" ] && return 1
-    _type="sub"
-    [ "$mode" = "dub" ] && _type="dub"
+    if [ "$mode" = "dub" ]; then
+        _link_types="dub"
+    else
+        # prefer hard-subbed servers (hsub), fall back to soft-subbed (sub)
+        _link_types="hsub sub"
+    fi
     _servers="$(anikoto_curl "${provider_base}/ajax/server/list?servers=${_ids}")"
-    _links="$(printf '%s' "$_servers" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
-        | sed 's|<div class="type"|\n<div class="type"|g' \
-        | grep "data-type=\"${_type}\"" | head -1 \
-        | grep -oE 'data-link-id="[^"]*"' | cut -d'"' -f2)"
+    _links="$(anikoto_server_links "$_servers" "$_link_types")"
     if [ -z "$_links" ]; then
         # servers may have expired, ask the site to refresh them once
         anikoto_curl "${provider_base}/check-server?manga_id=${anikoto_numeric_id}" >/dev/null 2>&1
         sleep 2
         _servers="$(anikoto_curl "${provider_base}/ajax/server/list?servers=${_ids}")"
-        _links="$(printf '%s' "$_servers" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
-            | sed 's|<div class="type"|\n<div class="type"|g' \
-            | grep "data-type=\"${_type}\"" | head -1 \
-            | grep -oE 'data-link-id="[^"]*"' | cut -d'"' -f2)"
+        _links="$(anikoto_server_links "$_servers" "$_link_types")"
     fi
     [ -z "$_links" ] && return 1
     # resolve every server's embed URL up front and try direct-playable hosts first
