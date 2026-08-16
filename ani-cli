@@ -365,12 +365,20 @@ anikoto_feed_stream() {
     _dir="$1"
     _off="$2"
     _i=0
+    _skip_first=0
     if [ -s "$_dir/probe.raw" ]; then
         tail -c +$((_off + 1)) "$_dir/probe.raw" > "$_dir/seg0.ts"
         rm -f "$_dir/probe.raw"
         _i=1
+        # seg0.ts was already written from the probe, so don't re-download the
+        # first entry of segments.txt (that would shift every segment by one
+        # and break seeking in the player)
+        _skip_first=1
     fi
+    _ln=0
     while IFS= read -r _url; do
+        _ln=$((_ln + 1))
+        [ "$_skip_first" = 1 ] && [ "$_ln" -eq 1 ] && continue
         [ -z "$_url" ] && continue
         if [ -p "$_dir/seg${_i}.ts" ]; then
             curl -sL -m 60 -A "$agent" -e "${anikoto_referer}/" "$_url" \
