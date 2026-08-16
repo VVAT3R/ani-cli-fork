@@ -165,6 +165,7 @@ cleanup() {
     tput sgr0               # clears colors
     rm -f "${histfile}.new" # remove temp logfile
     anikoto_feed_cleanup
+    anikoto_sub_cleanup
 }
 
 # SCRAPING
@@ -261,6 +262,90 @@ anikoto_desc() {
 anikoto_m3u8=""
 anikoto_referer=""
 anikoto_direct=0
+anikoto_sub_dir=""
+anikoto_sub_flags=""
+# pulls every caption track out of a getSources JSON, one
+# "rank<tab>label<tab>host<tab>url" line each. the player is handed all of them,
+# so subtitles can be switched while watching; rank 0 sorts the track to play by
+# default ahead of the rest
+anikoto_sub_tracks() {
+    _thost="$2"
+    printf '%s' "$1" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
+        | sed -e 's|},{|}\n{|g' -e 's|\[|\n|g' \
+        | grep '"kind":"captions"' \
+        | while IFS= read -r _entry; do
+            _sfile="$(printf '%s' "$_entry" | sed -nE 's|.*"file":"([^"]*)".*|\1|p')"
+            _slabel="$(printf '%s' "$_entry" | sed -nE 's|.*"label":"([^"]*)".*|\1|p')"
+            [ -z "$_sfile" ] && continue
+            _srank=1
+            case "$_entry" in *'"default":true'*) _srank=0 ;; esac
+            case "$_slabel" in [Ee]nglish*) _srank=0 ;; esac
+            printf '%s\t%s\t%s\t%s\n' "$_srank" "${_slabel:-Subtitle}" "$_thost" "$_sfile"
+        done
+}
+
+# downloads the caption tracks and builds the player's --sub-file flags. the
+# subtitle CDNs reject requests that don't carry the embed host as referer, and
+# mpv names external tracks after the file, so each is saved as <label>.vtt.
+# takes the accumulated "rank<tab>label<tab>host<tab>url" lines; the first copy
+# of a language wins, so the preferred server's version is the one kept
+anikoto_get_subs() {
+    anikoto_sub_cleanup
+    _tracks="$(printf '%s\n' "$1" | grep -v '^[[:space:]]*$' | sort -k1,1n)"
+    [ -z "$_tracks" ] && return 0
+    anikoto_sub_dir="$(mktemp -d)"
+    # fetch in parallel: a serial pass costs a round trip per language. the
+    # empty file reserves the name so a language seen twice is only fetched once
+    _sub_pids=""
+    while IFS="$(printf '\t')" read -r _srank _slabel _thost _sfile; do
+        [ -z "$_sfile" ] && continue
+        _dest="${anikoto_sub_dir}/$(anikoto_sub_name "$_slabel").vtt"
+        [ -e "$_dest" ] && continue
+        : > "$_dest"
+        $curl_exe -sL -A "$agent" -e "${_thost}/" --max-time 15 -o "$_dest" "$_sfile" 2>/dev/null &
+        _sub_pids="$_sub_pids $!"
+    done <<EOF
+$_tracks
+EOF
+    # only the fetches, never a leftover feeder, so this can't block on playback
+    for _sub_pid in $_sub_pids; do wait "$_sub_pid" 2>/dev/null; done
+    # order the flags by rank so the default language is the one mpv selects
+    while IFS="$(printf '\t')" read -r _srank _slabel _thost _sfile; do
+        [ -z "$_sfile" ] && continue
+        _dest="${anikoto_sub_dir}/$(anikoto_sub_name "$_slabel").vtt"
+        case " $anikoto_sub_flags " in *" --sub-file=$_dest "*) continue ;; esac
+        if head -c 6 "$_dest" 2>/dev/null | grep -q 'WEBVTT'; then
+            anikoto_sub_flags="$anikoto_sub_flags --sub-file=$_dest"
+        else
+            rm -f "$_dest"
+        fi
+    done <<EOF
+$_tracks
+EOF
+    return 0
+}
+
+# resolves one server's embed URL and prints just its caption tracks
+anikoto_alt_tracks() {
+    _a_page="$(anikoto_curl -e "${provider_base}/" "$1")"
+    _a_id="$(printf '%s' "$_a_page" | tr '\n' ' ' | sed -nE 's|.*id="megaplay-player"[^>]*data-id="([0-9]+)".*|\1|p')"
+    [ -z "$_a_id" ] && return 0
+    _a_host="$(printf '%s' "$1" | sed -E 's|/stream/.*||')"
+    anikoto_sub_tracks "$(anikoto_curl "${_a_host}/stream/getSources?id=${_a_id}")" "$_a_host"
+}
+
+# a language label as a filename; mpv shows this as the track name
+anikoto_sub_name() {
+    _n="$(printf '%s' "$1" | tr -cd 'A-Za-z0-9 ()._-' | tr ' ' '_')"
+    printf '%s' "${_n:-Subtitle}"
+}
+
+anikoto_sub_cleanup() {
+    [ -n "$anikoto_sub_dir" ] && rm -rf "$anikoto_sub_dir"
+    anikoto_sub_dir=""
+    anikoto_sub_flags=""
+}
+
 # extract server link-ids from a servers JSON; each type is tried in order and
 # all matching links are returned (hsub = hard subs, sub = soft subs, dub)
 anikoto_server_links() {
@@ -328,6 +413,24 @@ get_anikoto_m3u8() {
         [ -z "$_m3u8" ] && continue
         anikoto_m3u8="$_m3u8"
         anikoto_referer="$_host"
+        # the playable server often carries fewer languages than the others, so
+        # collect caption tracks from every server before handing them over
+        _sub_tracks="$(anikoto_sub_tracks "$_src" "$_host")"
+        # probe the other servers in parallel, each writing its tracks to a file
+        _alt_dir="$(mktemp -d)"
+        _alt_pids=""
+        _alt_n=0
+        for _alt_url in $_direct_urls $_proxied_urls; do
+            [ "$_alt_url" = "$_embed_url" ] && continue
+            _alt_n=$((_alt_n + 1))
+            anikoto_alt_tracks "$_alt_url" >"${_alt_dir}/${_alt_n}" 2>/dev/null &
+            _alt_pids="$_alt_pids $!"
+        done
+        for _alt_pid in $_alt_pids; do wait "$_alt_pid" 2>/dev/null; done
+        _sub_tracks="$_sub_tracks
+$(cat "${_alt_dir}"/* 2>/dev/null)"
+        rm -rf "$_alt_dir"
+        anikoto_get_subs "$_sub_tracks"
         case "$_embed_url" in
             *vidtube*|*akirax*) anikoto_direct=1 ;;
             *) anikoto_direct=0 ;;
@@ -615,9 +718,9 @@ play_episode() {
             [ -n "$_mpv_socket" ] && _mpv_args="--input-ipc-server=$_mpv_socket"
             [ -n "$_resume_pos" ] && [ "$_resume_pos" != "0" ] && _mpv_args="$_mpv_args --start=$_resume_pos"
             if [ "$no_detach" = 0 ]; then
-                nohup $player_function $_mpv_args $skip_flag --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $refr_flag $player_extra_flags >/dev/null 2>&1 &
+                nohup $player_function $_mpv_args $skip_flag $anikoto_sub_flags --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $refr_flag $player_extra_flags >/dev/null 2>&1 &
             else
-                $player_function $_mpv_args $skip_flag $refr_flag --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $player_extra_flags
+                $player_function $_mpv_args $skip_flag $refr_flag $anikoto_sub_flags --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $player_extra_flags
                 mpv_exitcode=$?
                 [ "$exit_after_play" = 1 ] && [ -z "$range" ] && exit "$mpv_exitcode"
             fi
@@ -626,13 +729,15 @@ play_episode() {
         android_vlc) nohup am start --user 0 -a android.intent.action.VIEW -d "$episode" -n org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity -e "title" "${anime_title}Episode ${ep_no}" $player_extra_flags >/dev/null 2>&1 & ;;
         *iina*)
             [ -n "$refr_flag" ] && refr_flag="--mpv-${refr_flag#--}"
+            _iina_subs=""
+            for _iina_sub in $anikoto_sub_flags; do _iina_subs="$_iina_subs --mpv-${_iina_sub#--}"; done
             if pgrep -f "IINA" >/dev/null 2>&1; then
-                nohup $player_function --no-stdin --mpv-tls-verify=no --mpv-force-media-title="${anime_title}Episode ${ep_no}" $refr_flag "$episode" $player_extra_flags >/dev/null 2>&1 &
+                nohup $player_function --no-stdin --mpv-tls-verify=no --mpv-force-media-title="${anime_title}Episode ${ep_no}" $refr_flag $_iina_subs "$episode" $player_extra_flags >/dev/null 2>&1 &
             else
-                nohup $player_function --no-stdin --mpv-tls-verify=no --keep-running --mpv-force-media-title="${anime_title}Episode ${ep_no}" $refr_flag "$episode" $player_extra_flags >/dev/null 2>&1 &
+                nohup $player_function --no-stdin --mpv-tls-verify=no --keep-running --mpv-force-media-title="${anime_title}Episode ${ep_no}" $refr_flag $_iina_subs "$episode" $player_extra_flags >/dev/null 2>&1 &
             fi
             ;;
-        flatpak_mpv) flatpak run io.mpv.Mpv --input-ipc-server="$_mpv_socket" --start="$_resume_pos" --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $refr_flag $player_extra_flags >/dev/null 2>&1 & ;;
+        flatpak_mpv) flatpak run io.mpv.Mpv --input-ipc-server="$_mpv_socket" --start="$_resume_pos" $anikoto_sub_flags --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $refr_flag $player_extra_flags >/dev/null 2>&1 & ;;
         vlc*) nohup $player_function --http-referrer="${refr_flag#--referrer=}" --play-and-exit --meta-title="${anime_title}Episode ${ep_no}" "$episode" $player_extra_flags >/dev/null 2>&1 & ;;
         *yncpla*) nohup $player_function "$episode" $player_extra_flags -- --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" $refr_flag >/dev/null 2>&1 & ;;
         download) "$player_function" "$episode" "${anime_title}Episode ${ep_no}" $player_extra_flags ;;
