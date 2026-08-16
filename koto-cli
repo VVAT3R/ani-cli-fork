@@ -957,7 +957,7 @@ play
 [ "$player_function" = "download" ] && exit 0
 [ "$player_function" = "debug" ] && exit 0
 
-while cmd=$(printf 'next\nreplay\nprevious\nselect\nchange_quality\nquit' | nth "Playing episode $ep_no of $title... "); do
+while cmd=$(printf 'next\nreplay\nprevious\nselect\nchange_quality\nseasons\nquit' | nth "Playing episode $ep_no of $title... "); do
     # save playback position before acting on the menu choice
     if [ "$menu_program" = "fzf" ]; then
         case "$player_function" in
@@ -969,6 +969,20 @@ while cmd=$(printf 'next\nreplay\nprevious\nselect\nchange_quality\nquit' | nth 
         replay) episode="$replay" ;;
         previous) ep_no=$(printf "%s" "$ep_list" | sed -n "/^${ep_no}$/{g;1!p;};h") 2>/dev/null ;;
         select) ep_no=$(printf "%s" "$ep_list" | nth "Select episode: " "$menu_multi_flag") ;;
+        seasons)
+            _seasons="$(search_anikoto "$anime_title")"
+            [ -z "$_seasons" ] && die "No other versions of \"$title\" found"
+            new_anime="$(printf "%s" "$_seasons" | nl -w 2 | sed 's/^[[:space:]]//' | nth "Select anime: ")"
+            [ -z "$new_anime" ] && die "Invalid/No Anime Selection"
+            id="$(printf "%s" "$new_anime" | cut -f1)"
+            title="$(printf "%s" "$new_anime" | cut -f2)"
+            anime_title="$(printf "%s" "$title" | cut -d'(' -f1 | tr -d '[:punct:]')"
+            anikoto_desc "$id" || true
+            ep_list=$(episodes_list_anikoto "$id")
+            [ -z "$ep_list" ] && die "Could not fetch episodes for \"$title\""
+            ep_no=$(printf "%s" "$ep_list" | nth "Select episode: " "$menu_multi_flag")
+            [ -z "$ep_no" ] && die "Invalid/No Episode Selection"
+            ;;
         change_quality)
             new_quality="$(printf "%s" "$links" | menu | cut -d">" -f1)"
             [ -z "$new_quality" ] && die "No quality selected"

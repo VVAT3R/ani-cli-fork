@@ -39,6 +39,7 @@ The whole pipeline runs in plain POSIX shell — no API keys, no crypto, no pyth
 - Single & multi-episode selection, including ranges (`-e`, `-r`)
 - Quality selection (`-q`)
 - Interactive menus (fzf / rofi / dmenu)
+- Jump between seasons of a show from the post-play menu
 - Skip intros with ani-skip (`--skip`, mpv only)
 - Player support: mpv, vlc, iina, android, flatpak, syncplay and more
 - Next-episode countdown (`-N`)
