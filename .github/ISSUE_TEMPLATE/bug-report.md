@@ -9,7 +9,7 @@ assignees: ''
 ## **Make sure you are on the latest version by running `koto-cli -U`**
 
 **Metadata (please complete the following information)**
-Version: [e.g. 4.7.6, run `koto-cli -V` to find out]
+Version: [e.g. 1.0.0, run `koto-cli -V` to find out]
 OS: [e.g. Windows 10 / Linux Mint 20.3]
 Shell: [e.g. zsh, run `readlink /bin/sh` to get your shell]
 Anime: [e.g. flcl] (if applicable)
