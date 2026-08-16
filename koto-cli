@@ -178,6 +178,8 @@ select_quality() {
     [ -z "$result" ] && warn "Specified quality not found, defaulting to best" && result=$(printf "%s" "$links" | head -n1)
 
     refr_flag="--referrer=${anikoto_referer:-$provider_base}/"
+    sub_flag=""
+    [ -n "$anikoto_sub_vtt" ] && sub_flag="--sub-file=$anikoto_sub_vtt"
     episode=$(printf "%s" "$result" | cut -d'>' -f2)
 
     # obfuscated streams (megaplay) need the local FIFO feed to play
@@ -261,6 +263,8 @@ anikoto_desc() {
 anikoto_m3u8=""
 anikoto_referer=""
 anikoto_direct=0
+anikoto_softsub=0
+anikoto_sub_vtt=""
 # extract server link-ids from a servers JSON; each type is tried in order and
 # all matching links are returned (hsub = hard subs, sub = soft subs, dub)
 anikoto_server_links() {
@@ -282,6 +286,8 @@ get_anikoto_m3u8() {
     anikoto_m3u8=""
     anikoto_referer=""
     anikoto_direct=0
+    anikoto_softsub=0
+    anikoto_sub_vtt=""
     anime_id_anikoto "$_slug" || return 1
     anime_episodes_json_anikoto "$anikoto_numeric_id"
     _anchor="$(printf '%s' "$anikoto_ep_json" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
@@ -292,7 +298,7 @@ get_anikoto_m3u8() {
     if [ "$mode" = "dub" ]; then
         _link_types="dub"
     else
-        # only hard-subbed servers (hsub)
+        # hard-subbed servers (hsub) first, soft-subbed (sub) as fallback
         _link_types="hsub"
     fi
     _servers="$(anikoto_curl "${provider_base}/ajax/server/list?servers=${_ids}")"
@@ -303,6 +309,13 @@ get_anikoto_m3u8() {
         sleep 2
         _servers="$(anikoto_curl "${provider_base}/ajax/server/list?servers=${_ids}")"
         _links="$(anikoto_server_links "$_servers" "$_link_types")"
+    fi
+    # no hard subs on this episode: fall back to soft-sub servers (their
+    # caption track is handed to the player later)
+    if [ -z "$_links" ] && [ "$mode" != "dub" ]; then
+        _link_types="sub"
+        _links="$(anikoto_server_links "$_servers" "$_link_types")"
+        [ -n "$_links" ] && anikoto_softsub=1
     fi
     [ -z "$_links" ] && return 1
     # resolve every server's embed URL up front and try direct-playable hosts first
@@ -328,6 +341,15 @@ get_anikoto_m3u8() {
         [ -z "$_m3u8" ] && continue
         anikoto_m3u8="$_m3u8"
         anikoto_referer="$_host"
+        # soft-sub fallback: grab the caption track (English, else default)
+        if [ "$anikoto_softsub" = 1 ]; then
+            _tracks="$(printf '%s' "$_src" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' | tr '{' '\n' \
+                | grep -E '"kind":"(captions|subtitles)"')"
+            anikoto_sub_vtt="$(printf '%s' "$_tracks" | grep -i '"label":"english"' | head -1)"
+            [ -z "$anikoto_sub_vtt" ] && anikoto_sub_vtt="$(printf '%s' "$_tracks" | grep '"default":true' | head -1)"
+            [ -z "$anikoto_sub_vtt" ] && anikoto_sub_vtt="$(printf '%s' "$_tracks" | head -1)"
+            anikoto_sub_vtt="$(printf '%s' "$anikoto_sub_vtt" | grep -oE '"file":"[^"]*"' | head -1 | cut -d'"' -f4)"
+        fi
         case "$_embed_url" in
             *vidtube*|*akirax*) anikoto_direct=1 ;;
             *) anikoto_direct=0 ;;
@@ -618,6 +640,7 @@ play_episode() {
         debug)
             printf "All links:\n%s\nSelected link:\n" "$links"
             printf "%s\n" "$episode"
+            [ -n "$anikoto_sub_vtt" ] && printf "Subtitle: %s\n" "$anikoto_sub_vtt"
             ;;
         mpv*)
             _mpv_args=""
@@ -631,9 +654,9 @@ play_episode() {
                 _mpv_args="$_mpv_args --cache=yes --demuxer-max-bytes=512MiB --demuxer-max-back-bytes=256MiB"
             fi
             if [ "$no_detach" = 0 ]; then
-                nohup $player_function $_mpv_args $skip_flag --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $refr_flag $player_extra_flags >/dev/null 2>&1 &
+                nohup $player_function $_mpv_args $skip_flag --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $refr_flag $sub_flag $player_extra_flags >/dev/null 2>&1 &
             else
-                $player_function $_mpv_args $skip_flag $refr_flag --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $player_extra_flags
+                $player_function $_mpv_args $skip_flag $refr_flag --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $sub_flag $player_extra_flags
                 mpv_exitcode=$?
                 [ "$exit_after_play" = 1 ] && [ -z "$range" ] && exit "$mpv_exitcode"
             fi
@@ -643,14 +666,14 @@ play_episode() {
         *iina*)
             [ -n "$refr_flag" ] && refr_flag="--mpv-${refr_flag#--}"
             if pgrep -f "IINA" >/dev/null 2>&1; then
-                nohup $player_function --no-stdin --mpv-tls-verify=no --mpv-force-media-title="${anime_title}Episode ${ep_no}" $refr_flag "$episode" $player_extra_flags >/dev/null 2>&1 &
+                nohup $player_function --no-stdin --mpv-tls-verify=no --mpv-force-media-title="${anime_title}Episode ${ep_no}" $refr_flag "$episode" $sub_flag $player_extra_flags >/dev/null 2>&1 &
             else
-                nohup $player_function --no-stdin --mpv-tls-verify=no --keep-running --mpv-force-media-title="${anime_title}Episode ${ep_no}" $refr_flag "$episode" $player_extra_flags >/dev/null 2>&1 &
+                nohup $player_function --no-stdin --mpv-tls-verify=no --keep-running --mpv-force-media-title="${anime_title}Episode ${ep_no}" $refr_flag "$episode" $sub_flag $player_extra_flags >/dev/null 2>&1 &
             fi
             ;;
-        flatpak_mpv) flatpak run io.mpv.Mpv --input-ipc-server="$_mpv_socket" --start="$_resume_pos" --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $refr_flag $player_extra_flags >/dev/null 2>&1 & ;;
+        flatpak_mpv) flatpak run io.mpv.Mpv --input-ipc-server="$_mpv_socket" --start="$_resume_pos" --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $refr_flag $sub_flag $player_extra_flags >/dev/null 2>&1 & ;;
         vlc*) nohup $player_function --http-referrer="${refr_flag#--referrer=}" --play-and-exit --meta-title="${anime_title}Episode ${ep_no}" "$episode" $player_extra_flags >/dev/null 2>&1 & ;;
-        *yncpla*) nohup $player_function "$episode" $player_extra_flags -- --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" $refr_flag >/dev/null 2>&1 & ;;
+        *yncpla*) nohup $player_function "$episode" $sub_flag $player_extra_flags -- --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" $refr_flag >/dev/null 2>&1 & ;;
         download) "$player_function" "$episode" "${anime_title}Episode ${ep_no}" $player_extra_flags ;;
         catt) nohup catt cast "$episode" $player_extra_flags >/dev/null 2>&1 & ;;
         iSH)

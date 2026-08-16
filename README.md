@@ -26,14 +26,14 @@ The whole pipeline runs in plain POSIX shell — no API keys, no crypto, no pyth
 1. **Search** hits the site's `ajax/anime/search?keyword=...` endpoint (with an `X-Requested-With: XMLHttpRequest` header) and regexes the returned HTML into `slug` + title pairs.
 2. **Anime ID** is read from the watch page's `id="watch-main" data-id="..."` attribute (falling back to the `mangaId = ...` script variable) and cached so it's fetched only once per title.
 3. **Episodes** come from `ajax/episode/list/<id>` — `data-num` attributes yield the episode numbers, `data-ids` links them to their server groups.
-4. **Servers** are resolved via `ajax/server/list?servers=<ids>`. Each entry has a `data-type` (**hsub** = hard subs, **sub** = soft subs, **dub**) and a `data-link-id`. koto-cli asks for `hsub` by default and `dub` with `--dub`. If the server list comes back empty, it pings `/check-server` once to force the site to refresh the links.
+4. **Servers** are resolved via `ajax/server/list?servers=<ids>`. Each entry has a `data-type` (**hsub** = hard subs, **sub** = soft subs, **dub**) and a `data-link-id`. koto-cli asks for `hsub` by default and `dub` with `--dub`; if no hard-sub servers exist for an episode it falls back to soft-sub (`sub`) servers and hands the player the episode's English caption track. If the server list comes back empty, it pings `/check-server` once to force the site to refresh the links.
 5. **Streams**: each server resolves to a megaplay embed (`ajax/server?get=<link-id>`). koto-cli grabs the `#megaplay-player` `data-id`, then calls `<host>/stream/getSources?id=<file-id>&type=<type>` for the `.m3u8`. Direct-playable hosts (vidtube, akirax) are tried first, proxied ones second.
 6. **Feeder**: the m3u8 segments are obfuscated — real MPEG-TS with a junk prefix. koto-cli auto-detects the prefix by scanning for the TS sync byte `0x47` repeated every 188 bytes, then a pure-POSIX background feeder downloads each segment, strips the junk, and writes clean `.ts` files into a local cache dir that the player reads from a local `playlist.m3u8` (FIFOs for download flow control, regular files so mpv can seek back).
 
 ### Features
 
 - **anikoto** source — direct `.m3u8` streams, no crypto dependencies
-- Hard-sub (hsub) and dubbed playback
+- Hard-sub (hsub) and dubbed playback, with soft-sub (caption) fallback when a title has no hard subs
 - Watch history with resume position tracking (`-c`, `--resume`)
 - Batch download with progress indicator (`--batch`)
 - Single & multi-episode selection, including ranges (`-e`, `-r`)
