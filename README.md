@@ -19,7 +19,7 @@ A standalone POSIX shell script to browse, search and watch anime from the comma
 
 ### How koto-cli came to be
 
-koto-cli started as a fork of ani-cli whose provider didn't serve the site I wanted to watch. So I reverse-engineered [anikototv.to](https://anikototv.to) — inspecting its network requests, HTML and scripts in the browser devtools — and wrote an **anikoto** provider on top of ani-cli's structure. That work lived on the `ani-cli-anikoto` branch, and I spun it out into this standalone repo so it can live on its own, with no ties to ani-cli. It's still at an experimental stage — expect rough edges.
+koto-cli started as a fork of ani-cli whose provider didn't serve some anime that were missing from anidb.app — now the new default provider of upstream ani-cli — so I couldn't watch what I wanted to. So I reverse-engineered [anikototv.to](https://anikototv.to), inspecting its network requests, HTML and scripts in the browser devtools, and wrote an **anikoto** provider on top of ani-cli's structure. That work lived on the `ani-cli-anikoto` branch, and I spun it out into this standalone repo so it can live on its own, with no ties to ani-cli. It's still at an experimental stage — expect rough edges.
 
 The whole pipeline runs in plain POSIX shell — no API keys, no crypto, no python3:
 
@@ -33,9 +33,15 @@ The whole pipeline runs in plain POSIX shell — no API keys, no crypto, no pyth
 ### Features
 
 - **anikoto** source — direct `.m3u8` streams, no crypto dependencies
-- Sub and dub playback
-- Watch history with resume position tracking
-- Batch download with progress indicator
+- Hard-sub (hsub) and dubbed playback
+- Watch history with resume position tracking (`-c`, `--resume`)
+- Batch download with progress indicator (`--batch`)
+- Single & multi-episode selection, including ranges (`-e`, `-r`)
+- Quality selection (`-q`)
+- Interactive menus (fzf / rofi / dmenu)
+- Skip intros with ani-skip (`--skip`, mpv only)
+- Player support: mpv, vlc, iina, android, flatpak, syncplay and more
+- Next-episode countdown (`-N`)
 - Install & uninstall scripts included
 
 ### Quick start
