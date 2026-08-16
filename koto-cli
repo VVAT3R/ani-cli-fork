@@ -295,7 +295,6 @@ get_anikoto_m3u8() {
         # only hard-subbed servers (hsub)
         _link_types="hsub"
     fi
-    _stream_type="$_link_types"
     _servers="$(anikoto_curl "${provider_base}/ajax/server/list?servers=${_ids}")"
     _links="$(anikoto_server_links "$_servers" "$_link_types")"
     if [ -z "$_links" ]; then
@@ -324,7 +323,7 @@ get_anikoto_m3u8() {
         _file_id="$(printf '%s' "$_embed_page" | tr '\n' ' ' | sed -nE 's|.*id="megaplay-player"[^>]*data-id="([0-9]+)".*|\1|p')"
         [ -z "$_file_id" ] && continue
         _host="$(printf '%s' "$_embed_url" | sed -E 's|/stream/.*||')"
-        _src="$(anikoto_curl "${_host}/stream/getSources?id=${_file_id}&type=${_stream_type}")"
+        _src="$(anikoto_curl "${_host}/stream/getSources?id=${_file_id}&type=${_link_types}")"
         _m3u8="$(printf '%s' "$_src" | sed -nE 's|.*"sources":\{"file":"([^"]*)".*|\1|p' | sed 's|\\/|/|g')"
         [ -z "$_m3u8" ] && continue
         anikoto_m3u8="$_m3u8"
@@ -935,7 +934,7 @@ play
 [ "$player_function" = "download" ] && exit 0
 [ "$player_function" = "debug" ] && exit 0
 
-while cmd=$(printf 'next\nreplay\nprevious\nselect%s\nchange_quality\nquit' "$seasons_option" | nth "Playing episode $ep_no of $title... "); do
+while cmd=$(printf 'next\nreplay\nprevious\nselect\nchange_quality\nquit' | nth "Playing episode $ep_no of $title... "); do
     # save playback position before acting on the menu choice
     if [ "$menu_program" = "fzf" ]; then
         case "$player_function" in
@@ -947,16 +946,6 @@ while cmd=$(printf 'next\nreplay\nprevious\nselect%s\nchange_quality\nquit' "$se
         replay) episode="$replay" ;;
         previous) ep_no=$(printf "%s" "$ep_list" | sed -n "/^${ep_no}$/{g;1!p;};h") 2>/dev/null ;;
         select) ep_no=$(printf "%s" "$ep_list" | nth "Select episode: " "$menu_multi_flag") ;;
-        seasons)
-            new_anime="$(printf "%s" "$seasons" | nl -w 2 | sed 's/^[[:space:]]//' | nth "Select anime: ")"
-            [ -z "$new_anime" ] && die "Invalid/No Anime Selection"
-            title="$(printf "%s" "$new_anime" | cut -f2)"
-            anime_title="$(printf "%s" "$title" | cut -d'(' -f1 | tr -d '[:punct:]')"
-            id="$(printf "%s" "$new_anime" | cut -f1)"
-            ep_list=$(episodes_list_anikoto "$id")
-            ep_no=$(printf "%s" "$ep_list" | nth "Select episode: " "$menu_multi_flag")
-            [ -z "$ep_no" ] && die "Invalid/No Episode Selection"
-            ;;
         change_quality)
             new_quality="$(printf "%s" "$links" | menu | cut -d">" -f1)"
             [ -z "$new_quality" ] && die "No quality selected"
