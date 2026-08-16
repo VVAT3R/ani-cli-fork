@@ -295,6 +295,7 @@ get_anikoto_m3u8() {
         # only hard-subbed servers (hsub)
         _link_types="hsub"
     fi
+    _stream_type="$_link_types"
     _servers="$(anikoto_curl "${provider_base}/ajax/server/list?servers=${_ids}")"
     _links="$(anikoto_server_links "$_servers" "$_link_types")"
     if [ -z "$_links" ]; then
@@ -323,7 +324,7 @@ get_anikoto_m3u8() {
         _file_id="$(printf '%s' "$_embed_page" | tr '\n' ' ' | sed -nE 's|.*id="megaplay-player"[^>]*data-id="([0-9]+)".*|\1|p')"
         [ -z "$_file_id" ] && continue
         _host="$(printf '%s' "$_embed_url" | sed -E 's|/stream/.*||')"
-        _src="$(anikoto_curl "${_host}/stream/getSources?id=${_file_id}&type=hsub")"
+        _src="$(anikoto_curl "${_host}/stream/getSources?id=${_file_id}&type=${_stream_type}")"
         _m3u8="$(printf '%s' "$_src" | sed -nE 's|.*"sources":\{"file":"([^"]*)".*|\1|p' | sed 's|\\/|/|g')"
         [ -z "$_m3u8" ] && continue
         anikoto_m3u8="$_m3u8"
