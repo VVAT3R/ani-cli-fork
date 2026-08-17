@@ -303,8 +303,8 @@ get_anikoto_m3u8() {
         # servers may have expired, ask the site to refresh them once
         anikoto_curl "${provider_base}/check-server?manga_id=${anikoto_numeric_id}" >/dev/null 2>&1
         _refresh_wait=0
-        while [ "$_refresh_wait" -lt 4 ]; do
-            sleep 0.5
+        while [ "$_refresh_wait" -lt 2 ]; do
+            sleep 1
             _refresh_wait=$((_refresh_wait + 1))
             _servers="$(anikoto_curl "${provider_base}/ajax/server/list?servers=${_ids}")"
             _links="$(anikoto_server_links "$_servers" "$_link_types")"
@@ -472,13 +472,11 @@ start_anikoto_fifo() {
     if [ "$anikoto_feed_fifo" != 1 ]; then
         _n=0
         _waits=0
-        _poll_delay=0.2
         while [ "$_waits" -lt 60 ]; do
             while [ -f "$anikoto_feed_dir/seg$_n.ts" ]; do _n=$((_n + 1)); done
             [ "$_n" -ge 3 ] && break
-            sleep "$_poll_delay"
+            sleep 1
             _waits=$((_waits + 1))
-            [ "$_waits" -ge 5 ] && _poll_delay=1
         done
     fi
 }
