@@ -121,7 +121,6 @@ update_script() {
     update="$(curl --fail-with-body -sL -A "$agent" "https://raw.githubusercontent.com/VVAT3R/koto-cli/$branch/koto-cli")" || die "[branch:$branch] Connection error: $update"
     new_version="$(printf "%s" "$update" | sed -nE 's|^version_number="([^"]+)"$|\1|p')"
     [ -z "$new_version" ] && die "[branch:$branch] Invalid response."
-    printf "%s" "$update" | grep -q "^version_number" || die "[branch:$branch] Invalid Response."
     update="$(printf "%s\n" "$update" | diff -u "$0" -)"
     if [ -z "$update" ]; then
         info "[branch:$branch] Script is up to date :) ($version_number)"
@@ -232,15 +231,13 @@ anime_id_anikoto() {
     [ -n "$anikoto_numeric_id" ] || return 1
 }
 
-anikoto_ep_json=""
-anikoto_ep_json_id=""
+anikoto_ep_clean_id=""
 anikoto_ep_clean=""
 anime_episodes_json_anikoto() {
     _id="$1"
-    if [ "$anikoto_ep_json_id" != "$_id" ]; then
-        anikoto_ep_json="$(anikoto_curl "${provider_base}/ajax/episode/list/${_id}")"
-        anikoto_ep_clean="$(printf '%s' "$anikoto_ep_json" | sed -e 's|\\"|"|g' -e 's|\\/|/|g')"
-        anikoto_ep_json_id="$_id"
+    if [ "$anikoto_ep_clean_id" != "$_id" ]; then
+        anikoto_ep_clean="$(anikoto_curl "${provider_base}/ajax/episode/list/${_id}" | sed -e 's|\\"|"|g' -e 's|\\/|/|g')"
+        anikoto_ep_clean_id="$_id"
     fi
 }
 
@@ -939,7 +936,7 @@ case "$search" in
         title="$(printf "%s" "$result" | cut -f2)"
         anime_title="$(printf "%s" "$title" | cut -d'(' -f1 | tr -d '[:punct:]')"
         id="$(printf "%s" "$result" | cut -f1)"
-        anikoto_desc "$(printf "%s" "$result" | cut -f1)" || true
+        anikoto_desc "$id" || true
         ep_list=$(episodes_list_anikoto "$id")
         [ -z "$ep_list" ] && die "Could not fetch episodes for \"$title\" - it may be unavailable on anikototv.to, try another result"
         [ -n "$ep_no" ] && [ "$ep_no" -ne -1 ] && ! printf "%s" "$ep_list" | grep -q "^$ep_no$" && die "Invalid Episode Selection"
