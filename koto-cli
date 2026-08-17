@@ -22,9 +22,9 @@ nth() {
     prompt="$1"
     [ $# -ne 1 ] && multi_flag="$2"
     line=$(printf "%s" "$stdin" | cut -f1,3 | tr '\t' ' ' | menu "$prompt" "$multi_flag" "$menu_extra_flags" | cut -d " " -f 1)
-    line_start=$(printf "%s" "$line" | head -n1)
-    line_end=$(printf "%s" "$line" | tail -n1)
     [ -n "$line" ] || return 1
+    line_start="$(printf "%s" "$line" | awk 'NR==1{print}')"
+    line_end="$(printf "%s" "$line" | awk '{l=$0}END{print l}')"
     if [ "$line_start" = "$line_end" ]; then
         printf "%s" "$stdin" | grep -E '^'"${line}"'($|[[:space:]])' | cut -f2,3 || return 1
     else
@@ -196,6 +196,7 @@ provider_base="https://anikototv.to"
 
 anikoto_curl() {
     _retries=3
+    _delay=1
     _result=""
     while [ $_retries -gt 0 ]; do
         _result="$($curl_exe -sL -A "$agent" \
@@ -203,7 +204,7 @@ anikoto_curl() {
             --max-time 15 "$@" 2>/dev/null | tr -d '\r')"
         [ -n "$_result" ] && printf '%s' "$_result" && return 0
         _retries=$((_retries - 1))
-        [ $_retries -gt 0 ] && sleep 1
+        [ $_retries -gt 0 ] && sleep "$_delay" && _delay=$((_delay * 2))
     done
     return 1
 }
@@ -233,10 +234,12 @@ anime_id_anikoto() {
 
 anikoto_ep_json=""
 anikoto_ep_json_id=""
+anikoto_ep_clean=""
 anime_episodes_json_anikoto() {
     _id="$1"
     if [ "$anikoto_ep_json_id" != "$_id" ]; then
         anikoto_ep_json="$(anikoto_curl "${provider_base}/ajax/episode/list/${_id}")"
+        anikoto_ep_clean="$(printf '%s' "$anikoto_ep_json" | sed -e 's|\\"|"|g' -e 's|\\/|/|g')"
         anikoto_ep_json_id="$_id"
     fi
 }
@@ -245,7 +248,7 @@ episodes_list_anikoto() {
     _slug="$1"
     anime_id_anikoto "$_slug" || return 1
     anime_episodes_json_anikoto "$anikoto_numeric_id"
-    printf '%s' "$anikoto_ep_json" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
+    printf '%s' "$anikoto_ep_clean" \
         | grep -oE 'data-num="[0-9]+"' | grep -oE '[0-9]+' | sort -n -u
 }
 
@@ -253,7 +256,7 @@ anikoto_desc() {
     _slug="$1"
     anime_id_anikoto "$_slug" || return 1
     anime_episodes_json_anikoto "$anikoto_numeric_id"
-    _first="$(printf '%s' "$anikoto_ep_json" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
+    _first="$(printf '%s' "$anikoto_ep_clean" \
         | sed 's|<a |\n<a |g' | grep 'data-num="1"' | head -1)"
     mal_id="$(printf '%s' "$_first" | grep -oE 'data-mal="[0-9]+"' | head -1 | cut -d'"' -f2)"
 }
@@ -286,7 +289,7 @@ get_anikoto_m3u8() {
     anikoto_direct=0
     anime_id_anikoto "$_slug" || return 1
     anime_episodes_json_anikoto "$anikoto_numeric_id"
-    _anchor="$(printf '%s' "$anikoto_ep_json" | sed -e 's|\\"|"|g' -e 's|\\/|/|g' \
+    _anchor="$(printf '%s' "$anikoto_ep_clean" \
         | sed 's|<a |\n<a |g' | grep "data-num=\"${_ep_no}\"" | head -1)"
     [ -z "$_anchor" ] && return 1
     _ids="$(printf '%s' "$_anchor" | grep -oE 'data-ids="[^"]*"' | head -1 | cut -d'"' -f2)"
@@ -302,23 +305,39 @@ get_anikoto_m3u8() {
     if [ -z "$_links" ]; then
         # servers may have expired, ask the site to refresh them once
         anikoto_curl "${provider_base}/check-server?manga_id=${anikoto_numeric_id}" >/dev/null 2>&1
-        sleep 2
-        _servers="$(anikoto_curl "${provider_base}/ajax/server/list?servers=${_ids}")"
-        _links="$(anikoto_server_links "$_servers" "$_link_types")"
+        _refresh_wait=0
+        while [ "$_refresh_wait" -lt 4 ]; do
+            sleep 0.5
+            _refresh_wait=$((_refresh_wait + 1))
+            _servers="$(anikoto_curl "${provider_base}/ajax/server/list?servers=${_ids}")"
+            _links="$(anikoto_server_links "$_servers" "$_link_types")"
+            [ -n "$_links" ] && break
+        done
     fi
     [ -z "$_links" ] && return 1
-    # resolve every server's embed URL up front and try direct-playable hosts first
+    # resolve every server's embed URL up front (parallel) and try direct-playable hosts first
     _direct_urls=""
     _proxied_urls=""
+    _resolve_tmp="$(mktemp -d)"
+    _resolve_i=0
     for _link in $_links; do
-        _embed="$(anikoto_curl "${provider_base}/ajax/server?get=${_link}")"
-        _embed_url="$(printf '%s' "$_embed" | sed -nE 's|.*"url": *"([^"]*)".*|\1|p' | sed 's|\\/|/|g')"
-        [ -z "$_embed_url" ] && continue
-        case "$_embed_url" in
-            *vidtube*|*akirax*) _direct_urls="$_direct_urls $_embed_url" ;;
-            *) _proxied_urls="$_proxied_urls $_embed_url" ;;
-        esac
+        (anikoto_curl "${provider_base}/ajax/server?get=${_link}" > "$_resolve_tmp/$_resolve_i" 2>/dev/null) &
+        _resolve_i=$((_resolve_i + 1))
     done
+    wait
+    _resolve_idx=0
+    while [ "$_resolve_idx" -lt "$_resolve_i" ]; do
+        _embed="$(cat "$_resolve_tmp/$_resolve_idx" 2>/dev/null)"
+        _embed_url="$(printf '%s' "$_embed" | sed -nE 's|.*"url": *"([^"]*)".*|\1|p' | sed 's|\\/|/|g')"
+        if [ -n "$_embed_url" ]; then
+            case "$_embed_url" in
+                *vidtube*|*akirax*) _direct_urls="$_direct_urls $_embed_url" ;;
+                *) _proxied_urls="$_proxied_urls $_embed_url" ;;
+            esac
+        fi
+        _resolve_idx=$((_resolve_idx + 1))
+    done
+    rm -rf "$_resolve_tmp"
     for _embed_url in $_direct_urls $_proxied_urls; do
         [ -z "$_embed_url" ] && continue
         _embed_page="$(anikoto_curl -e "${provider_base}/" "$_embed_url")"
@@ -456,12 +475,13 @@ start_anikoto_fifo() {
     if [ "$anikoto_feed_fifo" != 1 ]; then
         _n=0
         _waits=0
-        while [ "$_waits" -lt 30 ]; do
-            _n=0
+        _poll_delay=0.2
+        while [ "$_waits" -lt 60 ]; do
             while [ -f "$anikoto_feed_dir/seg$_n.ts" ]; do _n=$((_n + 1)); done
             [ "$_n" -ge 3 ] && break
-            sleep 1
+            sleep "$_poll_delay"
             _waits=$((_waits + 1))
+            [ "$_waits" -ge 5 ] && _poll_delay=1
         done
     fi
 }
@@ -672,7 +692,7 @@ play_episode() {
                 while kill -0 "$!" 2>/dev/null; do
                     _pos=$(get_mpv_position)
                     [ -n "$_pos" ] && [ "$_pos" != "0" ] && _final_pos=$_pos
-                    sleep 2
+                    sleep 1
                 done
                 update_history "$_final_pos"
             fi
@@ -741,7 +761,9 @@ provider="${KOTO_CLI_PROVIDER:-anikoto}"
 download_dir="${KOTO_CLI_DOWNLOAD_DIR:-.}"
 log_episode="${KOTO_CLI_LOG:-1}"
 quality="${KOTO_CLI_QUALITY:-best}"
-case "$(uname -a | cut -d " " -f 1,3-)" in
+_platform="$(uname -a | cut -d " " -f 1,3-)"
+_os="$(uname -s)"
+case "$_platform" in
     *Darwin*) player_function="${KOTO_CLI_PLAYER:-$(where_iina)}" ;;   # mac OS
     *ndroid*) player_function="${KOTO_CLI_PLAYER:-android_mpv}" ;;     # Android OS (termux)
     *MINGW* | *WSL2*) player_function="${KOTO_CLI_PLAYER:-mpv.exe}" ;; # Windows OS
@@ -771,7 +793,7 @@ batch_mode=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -v | --vlc)
-            case "$(uname -a | cut -d " " -f 1,3-)" in
+            case "$_platform" in
                 *ndroid*) player_function="android_vlc" ;;
                 MINGW* | *WSL2*) player_function="vlc.exe" ;;
                 *ish*) player_function="iSH" ;;
@@ -779,7 +801,7 @@ while [ $# -gt 0 ]; do
             esac
             ;;
         -s | --syncplay)
-            case "$(uname -s)" in
+            case "$_os" in
                 Darwin*) player_function="/Applications/Syncplay.app/Contents/MacOS/syncplay" ;;
                 MINGW* | *Msys)
                     export PATH="$PATH":"/c/Program Files (x86)/Syncplay/"
@@ -819,7 +841,7 @@ while [ $# -gt 0 ]; do
             exit 0
             ;;
         -l | --logview)
-            case "$(uname -s)" in
+            case "$_os" in
                 Darwin*) log show --predicate 'process == "logger"' ;;
                 Linux*) journalctl -t koto-cli ;;
                 *) die "Logger not implemented for your platform" ;;
