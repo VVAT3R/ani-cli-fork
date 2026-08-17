@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>koto-cli</h1>
+  <img src="assets/logo.png" alt="koto-cli" height="128">
   <p><strong>Watch anime from your terminal.</strong></p>
 
   <p>
