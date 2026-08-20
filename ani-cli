@@ -150,7 +150,7 @@ dep_ch_failover() {
 }
 
 where_iina() {
-    [ -e "/Applications/IINA.app/Contents/MacOS/iina-cli" ] && echo "/Applications/IINA.app/Contents/MacOS/iina-cli" && return 0
+    [ -e "/Applications/IINA.app/Contents/MacOS/iina-cli" ] && printf "%s" "/Applications/IINA.app/Contents/MacOS/iina-cli" && return 0
     printf "%s" "iina" && return 0
 }
 
@@ -283,7 +283,8 @@ get_episode_url() {
 time_until_next_ep() {
     animeschedule="https://animeschedule.net"
     query="$(printf "%s\n" "$*" | tr ' ' '+')"
-    curl --max-time 5 -s -G "$animeschedule/api/v3/anime" --data "q=${query}" | sed 's|"id"|\n|g' | sed -nE 's|.*,"route":"([^"]*)","premier.*|\1|p' | while read -r anime; do
+    _routes="$(curl --max-time 5 -s -G "$animeschedule/api/v3/anime" --data "q=${query}" | sed 's|"id"|\n|g' | sed -nE 's|.*,"route":"([^"]*)","premier.*|\1|p')"
+    for anime in $_routes; do
         data=$(curl --max-time 5 -s "$animeschedule/anime/$anime" | sed '1,/"anime-header-list-buttons-wrapper"/d' | sed -nE 's|.*countdown-time-raw" datetime="([^"]*)".*|Next Raw Release: \1|p;s|.*countdown-time" datetime="([^"]*)".*|Next Sub Release: \1|p;s|.*english-title">([^<]*)<.*|English Title: \1|p;s|.*main-title".*>([^<]*)<.*|Japanese Title: \1|p')
         status="Ongoing"
         color="33"
@@ -407,28 +408,33 @@ play_episode() {
             [ -n "$_mpv_socket" ] && _mpv_args="--input-ipc-server=$_mpv_socket"
             [ -n "$_resume_pos" ] && [ "$_resume_pos" != "0" ] && _mpv_args="$_mpv_args --start=$_resume_pos"
             if [ "$no_detach" = 0 ]; then
-                nohup $player_function $_mpv_args $skip_flag --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $refr_flag $player_extra_flags >/dev/null 2>&1 &
+                nohup $player_function $_mpv_args $skip_flag --tls-verify=no --force-media-title="${anime_title} Episode ${ep_no}" "$episode" $refr_flag $player_extra_flags >/dev/null 2>&1 &
             else
-                $player_function $_mpv_args $skip_flag $refr_flag --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $player_extra_flags
+                $player_function $_mpv_args $skip_flag $refr_flag --tls-verify=no --force-media-title="${anime_title} Episode ${ep_no}" "$episode" $player_extra_flags
                 mpv_exitcode=$?
                 [ "$exit_after_play" = 1 ] && [ -z "$range" ] && exit "$mpv_exitcode"
             fi
             ;;
-        android_mpv) "$player_function" "$episode" "${anime_title}Episode ${ep_no}" "--tls-verify=no $refr_flag" $player_extra_flags 2>&1 & ;;
-        android_vlc) nohup am start --user 0 -a android.intent.action.VIEW -d "$episode" -n org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity -e "title" "${anime_title}Episode ${ep_no}" $player_extra_flags >/dev/null 2>&1 & ;;
+        android_mpv) "$player_function" "$episode" "${anime_title} Episode ${ep_no}" "--tls-verify=no $refr_flag" $player_extra_flags 2>&1 & ;;
+        android_vlc) nohup am start --user 0 -a android.intent.action.VIEW -d "$episode" -n org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity -e "title" "${anime_title} Episode ${ep_no}" $player_extra_flags >/dev/null 2>&1 & ;;
         *iina*)
             _iina_refr_flag=""
             [ -n "$refr_flag" ] && _iina_refr_flag="--mpv-${refr_flag#--}"
             if pgrep -f "IINA" >/dev/null 2>&1; then
-                nohup $player_function --no-stdin --mpv-tls-verify=no --mpv-force-media-title="${anime_title}Episode ${ep_no}" $_iina_refr_flag "$episode" $player_extra_flags >/dev/null 2>&1 &
+                nohup $player_function --no-stdin --mpv-tls-verify=no --mpv-force-media-title="${anime_title} Episode ${ep_no}" $_iina_refr_flag "$episode" $player_extra_flags >/dev/null 2>&1 &
             else
-                nohup $player_function --no-stdin --mpv-tls-verify=no --keep-running --mpv-force-media-title="${anime_title}Episode ${ep_no}" $_iina_refr_flag "$episode" $player_extra_flags >/dev/null 2>&1 &
+                nohup $player_function --no-stdin --mpv-tls-verify=no --keep-running --mpv-force-media-title="${anime_title} Episode ${ep_no}" $_iina_refr_flag "$episode" $player_extra_flags >/dev/null 2>&1 &
             fi
             ;;
-        flatpak_mpv) flatpak run io.mpv.Mpv --input-ipc-server="$_mpv_socket" --start="$_resume_pos" --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" "$episode" $refr_flag $player_extra_flags >/dev/null 2>&1 & ;;
-        vlc*) nohup $player_function --http-referrer="${refr_flag#--referrer=}" --play-and-exit --meta-title="${anime_title}Episode ${ep_no}" "$episode" $player_extra_flags >/dev/null 2>&1 & ;;
-        *yncpla*) nohup $player_function "$episode" $player_extra_flags -- --tls-verify=no --force-media-title="${anime_title}Episode ${ep_no}" $refr_flag >/dev/null 2>&1 & ;;
-        download) "$player_function" "$episode" "${anime_title}Episode ${ep_no}" $player_extra_flags ;;
+        flatpak_mpv)
+            _flatpak_args=""
+            [ -n "$_mpv_socket" ] && _flatpak_args="--input-ipc-server=$_mpv_socket"
+            [ -n "$_resume_pos" ] && [ "$_resume_pos" != "0" ] && _flatpak_args="$_flatpak_args --start=$_resume_pos"
+            nohup flatpak run io.mpv.Mpv $_flatpak_args --tls-verify=no --force-media-title="${anime_title} Episode ${ep_no}" "$episode" $refr_flag $player_extra_flags >/dev/null 2>&1 &
+            ;;
+        vlc*) nohup $player_function --http-referrer="${refr_flag#--referrer=}" --play-and-exit --meta-title="${anime_title} Episode ${ep_no}" "$episode" $player_extra_flags >/dev/null 2>&1 & ;;
+        *yncpla*) nohup $player_function "$episode" $player_extra_flags -- --tls-verify=no --force-media-title="${anime_title} Episode ${ep_no}" $refr_flag >/dev/null 2>&1 & ;;
+        download) "$player_function" "$episode" "${anime_title} Episode ${ep_no}" $player_extra_flags ;;
         catt) nohup catt cast "$episode" $player_extra_flags >/dev/null 2>&1 & ;;
         iSH)
             printf "\e]8;;vlc://%s\a~~~~~~~~~~~~~~~~~~~~\n~ Tap to open VLC ~\n~~~~~~~~~~~~~~~~~~~~\e]8;;\a\n" "$episode"
@@ -479,14 +485,14 @@ play() {
         fi
 
         for i in $range; do
-            tput clear
+            tput clear 2>/dev/null
             ep_no=$i
             canon_ep_no="$(printf "%s" "$ep_list" | sed -n "/^${ep_no}$/=")"
             if [ "$batch_mode" = 1 ]; then
                 _count=$((_count + 1))
                 printf "\33[2K\r\033[1;34m[%s/%s] Downloading episode %s...\033[0m\n" "$_count" "$_total" "$ep_no"
                 # skip if already downloaded
-                _fname="${anime_title}Episode ${ep_no}.mp4"
+                _fname="${anime_title} Episode ${ep_no}.mp4"
                 if [ -f "$download_dir/$_fname" ]; then
                     printf "\33[2K\r\033[1;33mSkipping episode %s (already exists)\033[0m\n" "$ep_no"
                     continue
@@ -502,7 +508,7 @@ play() {
         play_episode
     fi
     # moves up to stored position and deletes to end
-    [ "$player_function" != "debug" ] && [ "$player_function" != "download" ] && tput rc && tput ed
+    [ "$player_function" != "debug" ] && [ "$player_function" != "download" ] && tput rc 2>/dev/null && tput ed 2>/dev/null
 }
 
 # MAIN
@@ -630,7 +636,6 @@ done
 info "Using provider: anidb"
 
 info "Checking dependencies..."
-dep_ch "curl"
 dep_ch "sed"
 dep_ch "grep"
 [ "$skip_intro" = 1 ] && dep_ch "ani-skip"
@@ -695,9 +700,9 @@ case "$search" in
 esac
 
 # moves the cursor up one line and clears that line
-tput cuu1 && tput el
+tput cuu1 2>/dev/null && tput el 2>/dev/null
 # stores the position of cursor
-tput sc
+tput sc 2>/dev/null
 
 # playback & loop
 play
